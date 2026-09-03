@@ -92,12 +92,17 @@ normalizes both forms into a `Speaker` column. Similarly, `timestamp` is epoch s
 (confirmed against live data), though ISO 8601 and epoch milliseconds also occur; all three
 are handled.
 
-### `Content` is an object, not an array
+### `Content` has three encodings, and two of them fail silently
 
-Real transcripts store `content` as `{"activities": [ ... ]}`, not as a bare array of
-activities. Microsoft's documentation describes the activity fields but never states the
-top-level shape. A naive `mv-expand Content` fails against real data, so both shapes are
-accepted.
+Real transcripts store `content` in at least three shapes:
+
+1. a bare array of activities
+2. `{"activities": [ ... ]}` — the common case in current schema versions
+3. double-encoded `{"text": "<json string>"}`, activities nested as a JSON string
+
+Microsoft documents the activity *fields* but never the top-level shape. Handling only one
+form does not raise an error — it silently yields zero activities, which reads as an empty
+conversation rather than a parsing bug. `CopilotTranscriptTurn()` accepts all three.
 
 ---
 
@@ -257,6 +262,19 @@ The custom role must already exist in each environment; ship it in a small solut
 Also note: transcripts contain **conversation content**, which routinely includes personal
 data. Treat the ADX database as a sensitive data store — restrict Viewer, and set retention
 to match your actual obligation rather than leaving the 730-day default.
+
+---
+
+## Operating notes
+
+**Never run `.clear materialized-view CopilotTranscript data`.** Clearing empties the view
+and it does **not** backfill — the view then only materializes ingestion that arrives
+afterwards, so every historical transcript silently disappears from every query built on it.
+The raw table is unaffected, so recovery is to drop the view and let `scripts/deploy_kql.py`
+recreate it with `backfill=true`.
+
+Deleting rows from `CopilotTranscriptRaw` does not remove them from `CopilotTranscript`
+until the view is rebuilt, for the same reason.
 
 ---
 

@@ -21,9 +21,14 @@
 //
 // Expands each transcript's Bot Framework activity log into one row per activity.
 //
-// Observed shape in production: Content is an OBJECT, {"activities": [...]},
-// not a bare array. A naive `mv-expand Content` fails against real data. Both
-// shapes are accepted below since Microsoft documents neither explicitly.
+// Content has at least three observed encodings, none of them documented:
+//   1. a bare array of activities
+//   2. an object, {"activities": [...]}   <- the common case in current schemas
+//   3. double-encoded, {"text": "<json string>"}, where the activities are a
+//      JSON string nested inside a JSON field (seen on older schema versions)
+// Handling only one shape does not error -- it silently yields zero activities,
+// which looks like an empty conversation rather than a bug. All three are
+// accepted below.
 //
 // Two further hazards, both confirmed against real transcripts:
 //   * from.role is numeric and inverted from the obvious reading:
@@ -39,9 +44,16 @@ with (
 CopilotTranscriptTurn() {
     CopilotTranscript
     | where isnotnull(Content)
+    // Unwrap the double-encoded form before choosing an activity list.
+    | extend Decoded = iff(
+        gettype(Content) == "dictionary" and isnotnull(Content["text"]),
+        todynamic(tostring(Content["text"])),
+        dynamic(null))
     | extend Activities = case(
         gettype(Content) == "array", Content,
         gettype(Content) == "dictionary" and isnotnull(Content["activities"]), Content["activities"],
+        gettype(Decoded) == "array", Decoded,
+        gettype(Decoded) == "dictionary" and isnotnull(Decoded["activities"]), Decoded["activities"],
         dynamic(null))
     | where isnotnull(Activities)
     | mv-expand with_itemindex = ActivityIndex Activity = Activities to typeof(dynamic)
