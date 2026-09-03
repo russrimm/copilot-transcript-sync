@@ -381,11 +381,13 @@ Verified end to end against a live tenant, with the Function running in Azure:
 | `CopilotTranscriptTurn()` | Turns expanded; roles and epoch timestamps decoded correctly |
 | `CopilotConversationPair()` | Verified with a synthetic conversation, including merging consecutive agent replies |
 | Watermark persistence | Second run returned only the overlap window, proving the Table Storage round trip over a private endpoint |
+| Overlap deduplication under repeated runs | 18 raw rows across three runs collapsed to 8 distinct transcripts in the view |
 | Infrastructure | Deploys clean, including private networking |
 
 The second sync run returning one row per environment rather than zero is expected: the
 overlap window deliberately replays the newest transcript, and the deduplication view removes
-the repeat.
+the repeat. That is visible in the numbers above — the raw table accumulates replays while
+`CopilotTranscript` stays at the true transcript count.
 
 [pp-auth-v2]: https://learn.microsoft.com/en-us/power-platform/admin/programmability-authentication-v2
 [change-tracking]: https://learn.microsoft.com/en-us/power-apps/developer/data-platform/use-change-tracking-synchronize-data-external-systems
