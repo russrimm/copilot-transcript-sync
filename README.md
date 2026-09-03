@@ -88,8 +88,16 @@ across rows still reassembles correctly.
 
 In transcript content, `from.role` is **`0` for the agent and `1` for the user** — not the
 `"user"`/`"bot"` strings the Bot Framework schema uses elsewhere. `CopilotTranscriptTurn()`
-normalizes both forms into a `Speaker` column. Similarly, `timestamp` is documented as epoch
-seconds but ISO 8601 and epoch milliseconds both occur; all three are handled.
+normalizes both forms into a `Speaker` column. Similarly, `timestamp` is epoch seconds
+(confirmed against live data), though ISO 8601 and epoch milliseconds also occur; all three
+are handled.
+
+### `Content` is an object, not an array
+
+Real transcripts store `content` as `{"activities": [ ... ]}`, not as a bare array of
+activities. Microsoft's documentation describes the activity fields but never states the
+top-level shape. A naive `mv-expand Content` fails against real data, so both shapes are
+accepted.
 
 ---
 
@@ -264,6 +272,21 @@ func start
 Leaving `UAMI_CLIENT_ID` blank locally makes the code fall back to `DefaultAzureCredential`,
 so you authenticate as yourself via `az login`. That exercises discovery and extraction, but
 **not** the application-user path — a local run behaves as your user account, not as the app.
+
+> **Watch out:** if `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` are set in your shell,
+> `DefaultAzureCredential` resolves `EnvironmentCredential` *before* your `az login` session
+> and silently authenticates as that service principal instead. `scripts/deploy_kql.py`
+> therefore defaults to `AzureCliCredential`; pass `--credential default` to opt out.
+
+### Smoke scripts
+
+These talk to the real tenant and cluster, and are not part of `pytest`:
+
+| Script | What it proves |
+|---|---|
+| `scripts/smoke_discovery.py` | Tenant-wide app-only environment listing, and the eligibility filter |
+| `scripts/smoke_extract.py` | Dataverse extraction and ADX ingestion across every eligible environment |
+| `scripts/smoke_pairing.py` | `CopilotConversationPair()` against a synthetic conversation, then cleans up after itself |
 
 ---
 

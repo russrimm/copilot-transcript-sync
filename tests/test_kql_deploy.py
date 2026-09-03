@@ -46,6 +46,41 @@ def test_fenced_payload_is_not_split():
     assert commands[1] == ".alter table T policy caching hot = 1d"
 
 
+def test_trailing_comments_belong_to_the_next_command():
+    """A comment block between commands must not be appended to the previous one.
+
+    Regression: trailing comments after a materialized view's closing brace made
+    Kusto reject the whole command with a syntax error.
+    """
+    text = (
+        ".create materialized-view V on table T\n"
+        "{\n"
+        "    T | summarize arg_max(Ts, *) by Id\n"
+        "}\n"
+        "\n"
+        "//\n"
+        "// Explanation of the next command.\n"
+        "//\n"
+        ".create-or-alter function F() { T | take 1 }\n"
+    )
+    commands = split_commands(text)
+
+    assert len(commands) == 2
+    assert commands[0].endswith("}")
+    assert "Explanation" not in commands[0]
+    assert commands[1].startswith(".create-or-alter function F()")
+
+
+def test_no_command_ends_with_a_comment_line():
+    """Every shipped command must end on real syntax, not a trailing comment."""
+    for path in sorted(KQL_DIR.glob("*.kql")):
+        for command in split_commands(path.read_text(encoding="utf-8")):
+            last = command.splitlines()[-1].strip()
+            assert last and not last.startswith("//"), (
+                f"{path.name}: command ends with a comment: {command[:80]!r}"
+            )
+
+
 def test_real_schema_files_parse_into_commands():
     """Guard against the shipped .kql files drifting into an unparseable shape."""
     for path in sorted(KQL_DIR.glob("*.kql")):

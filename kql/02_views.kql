@@ -21,11 +21,15 @@
 //
 // Expands each transcript's Bot Framework activity log into one row per activity.
 //
-// Two shape hazards are handled explicitly:
+// Observed shape in production: Content is an OBJECT, {"activities": [...]},
+// not a bare array. A naive `mv-expand Content` fails against real data. Both
+// shapes are accepted below since Microsoft documents neither explicitly.
+//
+// Two further hazards, both confirmed against real transcripts:
 //   * from.role is numeric and inverted from the obvious reading:
 //     0 = agent, 1 = user. Some channels emit the string form instead.
-//   * timestamp is documented as epoch seconds, but ISO 8601 strings appear in
-//     practice, and some channels emit epoch milliseconds.
+//   * timestamp is epoch seconds (e.g. 1787159464), though ISO 8601 strings and
+//     epoch milliseconds also occur depending on channel.
 //
 .create-or-alter function
 with (
@@ -108,7 +112,9 @@ CopilotConversationPair() {
     CopilotTranscriptTurn()
     | where ActivityType == "message" and isnotempty(Text)
     | extend
-        ConversationKey = strcat(EnvironmentId, "|", ConversationId, "|", format_datetime(ConversationStartTime, "yyyy-MM-ddTHH:mm:ss")),
+        // tostring on a datetime yields a lossless ISO form. format_datetime is
+        // avoided here because a literal 'T' is not a valid format specifier.
+        ConversationKey = strcat(EnvironmentId, "|", ConversationId, "|", tostring(ConversationStartTime)),
         BatchOrder = coalesce(toint(BatchId), 0)
     | sort by ConversationKey asc, BatchOrder asc, ActivityIndex asc
     | extend IsUser = iff(Speaker == "user", 1, 0)

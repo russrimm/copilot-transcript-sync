@@ -97,21 +97,49 @@ if ($SkipManagementAppRegistration) {
 Write-Host ""
 Write-Host "Registering the app as a Power Platform management application..." -ForegroundColor Cyan
 
-if (-not (Get-Module -ListAvailable -Name Microsoft.PowerApps.Administration.PowerShell)) {
-    Write-Host "Installing Microsoft.PowerApps.Administration.PowerShell for the current user..." -ForegroundColor Cyan
-    Install-Module -Name Microsoft.PowerApps.Administration.PowerShell -Scope CurrentUser -Force -AllowClobber
+# The documented route is New-PowerAppManagementApp from
+# Microsoft.PowerApps.Administration.PowerShell, which requires an interactive
+# sign-in. The REST equivalent accepts the Azure CLI's delegated token, so try
+# that first and fall back to the module only if it fails.
+$registered = $false
+
+try {
+    $token = az account get-access-token --resource 'https://service.powerapps.com/' --query accessToken -o tsv
+    if ($LASTEXITCODE -ne 0 -or -not $token) { throw 'Could not acquire a Power Apps Service token via Azure CLI.' }
+
+    $headers = @{ Authorization = "Bearer $token"; Accept = 'application/json' }
+    $uri = "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/adminApplications/$AppClientId" +
+           "?api-version=2020-10-01"
+
+    Invoke-RestMethod -Method PUT -Uri $uri -Headers $headers -ContentType 'application/json' | Out-Null
+
+    $current = Invoke-RestMethod -Method GET -Headers $headers `
+        -Uri "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/adminApplications?api-version=2020-10-01"
+
+    if ($current.value.applicationId -contains $AppClientId) {
+        Write-Host "Registered $AppClientId as a Power Platform management application." -ForegroundColor Green
+        $registered = $true
+    }
+}
+catch {
+    Write-Warning "REST registration failed: $($_.Exception.Message)"
+    if ($_.ErrorDetails) { Write-Warning $_.ErrorDetails.Message }
 }
 
-Import-Module Microsoft.PowerApps.Administration.PowerShell
+if (-not $registered) {
+    Write-Host "Falling back to Microsoft.PowerApps.Administration.PowerShell..." -ForegroundColor Cyan
 
-Write-Host "Sign in as a Power Platform Administrator or Global Administrator when prompted." -ForegroundColor Yellow
-Add-PowerAppsAccount -Endpoint prod -TenantID $TenantId
+    if (-not (Get-Module -ListAvailable -Name Microsoft.PowerApps.Administration.PowerShell)) {
+        Install-Module -Name Microsoft.PowerApps.Administration.PowerShell -Scope CurrentUser -Force -AllowClobber
+    }
 
-New-PowerAppManagementApp -ApplicationId $AppClientId
+    Import-Module Microsoft.PowerApps.Administration.PowerShell
 
-Write-Host ""
-Write-Host "Verifying registration..." -ForegroundColor Cyan
-Get-PowerAppManagementApp -ApplicationId $AppClientId
+    Write-Host "Sign in as a Power Platform Administrator or Global Administrator when prompted." -ForegroundColor Yellow
+    Add-PowerAppsAccount -Endpoint prod -TenantID $TenantId
+    New-PowerAppManagementApp -ApplicationId $AppClientId
+    Get-PowerAppManagementApp -ApplicationId $AppClientId
+}
 
 Write-Host ""
 Write-Host "Phase 2 complete." -ForegroundColor Green

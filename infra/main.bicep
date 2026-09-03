@@ -28,8 +28,8 @@ param powerPlatformAppClientId string
 @description('Entra tenant ID hosting the Power Platform environments.')
 param powerPlatformTenantId string = subscription().tenantId
 
-@description('Object ID of the user or group that should get Admin on the ADX database, so it can create tables and run kql/*.kql.')
-param adxAdminPrincipalId string
+@description('Optional. Object ID of an ADDITIONAL principal to grant Admin on the ADX database. Leave empty in most cases: Azure Data Explorer already grants Admin to the identity that deploys the database, so setting this to your own object ID fails with "a PrincipalAssignment already exists with the same role and principal id".')
+param adxAdminPrincipalId string = ''
 
 @description('Principal type of adxAdminPrincipalId.')
 @allowed(['User', 'Group', 'App'])
@@ -218,8 +218,10 @@ resource adxViewer 'Microsoft.Kusto/clusters/databases/principalAssignments@2024
   }
 }
 
-// A human (or deployment identity) needs Admin to create the tables in kql/.
-resource adxAdmin 'Microsoft.Kusto/clusters/databases/principalAssignments@2024-04-13' = {
+// Optional extra Admin. The deploying identity already receives Admin on the
+// database from Azure Data Explorer itself, so this is only for granting an
+// additional user, group, or CI principal.
+resource adxAdmin 'Microsoft.Kusto/clusters/databases/principalAssignments@2024-04-13' = if (!empty(adxAdminPrincipalId)) {
   parent: adxDatabase
   name: guid(adxDatabase.id, adxAdminPrincipalId, 'Admin')
   properties: {
