@@ -51,6 +51,18 @@ param adxHotCachePeriod string = 'P90D'
 @description('Soft delete (retention) period for the ADX database. Must exceed the 30-day Dataverse retention this pipeline exists to outlive.')
 param adxSoftDeletePeriod string = 'P730D'
 
+@description('Whether to deploy private networking: a virtual network, private endpoints for storage, private DNS zones, and Function App VNet integration. Required in subscriptions whose policy forces storage public network access off.')
+param enablePrivateNetworking bool = true
+
+@description('Address space for the virtual network created when enablePrivateNetworking is true.')
+param vnetAddressPrefix string = '10.20.0.0/16'
+
+@description('Subnet for Function App VNet integration. Flex Consumption requires at least a /27 and delegation to Microsoft.App/environments.')
+param functionSubnetPrefix string = '10.20.1.0/26'
+
+@description('Subnet holding the storage private endpoints. Must be separate from the integration subnet.')
+param privateEndpointSubnetPrefix string = '10.20.2.0/27'
+
 @description('Timer schedule (NCRONTAB) for the sync. Defaults to every 30 minutes.')
 param syncSchedule string = '0 */30 * * * *'
 
@@ -78,6 +90,21 @@ var insightsName = '${namePrefix}-appi-${uniquePart}'
 var adxDatabaseName = 'CopilotTranscripts'
 var deploymentContainerName = 'app-package'
 var watermarkTableName = 'SyncWatermarks'
+
+var vnetName = '${namePrefix}-vnet-${shortUnique}'
+// Flex Consumption rejects subnet names containing an underscore.
+var functionSubnetName = 'snet-functions'
+var privateEndpointSubnetName = 'snet-private-endpoints'
+var storagePrivateDnsZones = [
+  'privatelink.blob.${environment().suffixes.storage}'
+  'privatelink.queue.${environment().suffixes.storage}'
+  'privatelink.table.${environment().suffixes.storage}'
+]
+var storagePrivateEndpointGroups = [
+  'blob'
+  'queue'
+  'table'
+]
 
 // Verified with `az role definition list --name '<role>' --query "[0].name"`.
 var roleStorageBlobDataOwner = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
@@ -277,6 +304,116 @@ resource metricsPublisherAssignment 'Microsoft.Authorization/roleAssignments@202
 }
 
 // -------------------------------------------------------------------------
+// Private networking
+//
+// Needed wherever policy forces storage public network access off. The Function
+// reaches blob, queue and table through private endpoints, so the deployment
+// container and the watermark table stay reachable without exposing storage.
+// -------------------------------------------------------------------------
+
+resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = if (enablePrivateNetworking) {
+  name: vnetName
+  location: location
+  properties: {
+    addressSpace: {
+      addressPrefixes: [
+        vnetAddressPrefix
+      ]
+    }
+    subnets: [
+      {
+        name: functionSubnetName
+        properties: {
+          addressPrefix: functionSubnetPrefix
+          // Flex Consumption requires this specific delegation. Elastic Premium
+          // and Dedicated plans use Microsoft.Web/serverFarms instead.
+          delegations: [
+            {
+              name: 'flex-consumption'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
+        }
+      }
+      {
+        name: privateEndpointSubnetName
+        properties: {
+          addressPrefix: privateEndpointSubnetPrefix
+        }
+      }
+    ]
+  }
+}
+
+resource privateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = [
+  for zone in storagePrivateDnsZones: if (enablePrivateNetworking) {
+    name: zone
+    location: 'global'
+  }
+]
+
+resource privateDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = [
+  for (zone, index) in storagePrivateDnsZones: if (enablePrivateNetworking) {
+    name: '${zone}/link-${vnetName}'
+    location: 'global'
+    properties: {
+      registrationEnabled: false
+      virtualNetwork: {
+        id: vnet.id
+      }
+    }
+    dependsOn: [
+      privateDnsZone[index]
+    ]
+  }
+]
+
+resource storagePrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-11-01' = [
+  for (group, index) in storagePrivateEndpointGroups: if (enablePrivateNetworking) {
+    name: '${storageName}-${group}-pe'
+    location: location
+    properties: {
+      subnet: {
+        id: '${vnet.id}/subnets/${privateEndpointSubnetName}'
+      }
+      privateLinkServiceConnections: [
+        {
+          name: '${group}-connection'
+          properties: {
+            privateLinkServiceId: storage.id
+            groupIds: [
+              group
+            ]
+          }
+        }
+      ]
+    }
+  }
+]
+
+resource storagePrivateDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = [
+  for (group, index) in storagePrivateEndpointGroups: if (enablePrivateNetworking) {
+    name: '${storageName}-${group}-pe/default'
+    properties: {
+      privateDnsZoneConfigs: [
+        {
+          name: replace(storagePrivateDnsZones[index], '.', '-')
+          properties: {
+            privateDnsZoneId: privateDnsZone[index].id
+          }
+        }
+      ]
+    }
+    dependsOn: [
+      storagePrivateEndpoint[index]
+      privateDnsZoneLink[index]
+    ]
+  }
+]
+
+// -------------------------------------------------------------------------
 // Function App (Flex Consumption)
 // -------------------------------------------------------------------------
 
@@ -306,6 +443,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
+    virtualNetworkSubnetId: enablePrivateNetworking ? '${vnet.id}/subnets/${functionSubnetName}' : null
     functionAppConfig: {
       deployment: {
         storage: {
@@ -426,6 +564,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     tableContributorAssignment
     deploymentContainer
     watermarkTable
+    storagePrivateDnsGroup
   ]
 }
 

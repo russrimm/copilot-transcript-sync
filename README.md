@@ -178,6 +178,24 @@ python scripts/deploy_kql.py `
 func azure functionapp publish <functionAppName-from-step-2>
 ```
 
+> **If your subscription forces storage private:** `func ... publish` performs a remote build
+> through Kudu, which runs **outside** your virtual network. If policy sets the storage
+> account's `publicNetworkAccess` to `Disabled`, that upload fails with:
+>
+> ```
+> [StorageAccessibleCheck] ... 403 (This request is not authorized to perform this operation.)
+> InaccessibleStorageException: Failed to access storage account for deployment
+> ```
+>
+> This is a **network** denial, not RBAC — an AAD call with `Storage Blob Data Contributor`
+> from outside the VNet fails the same way. Private endpoints and VNet integration do not fix
+> it, because they place the *app* in the network, not the *build service*.
+>
+> Deploy from inside the virtual network instead: a self-hosted GitHub Actions runner or Azure
+> DevOps agent on a VNet-joined VM, or any build host with a route to the storage private
+> endpoint. Do not work around it by relaxing the policy if that policy is inherited from a
+> management group — it isn't yours to change.
+
 ### 6. Trigger the first run
 
 ```powershell
@@ -294,11 +312,35 @@ These talk to the real tenant and cluster, and are not part of `pytest`:
 
 - Both documented environment-listing endpoints carry pre-release banners.
 - `New-PowerAppManagementApp` cannot be run by a service principal for itself; the
-  bootstrap genuinely requires an interactive administrator once.
+  bootstrap genuinely requires an interactive administrator once. The REST equivalent
+  (`PUT .../adminApplications/{clientId}`) accepts an Azure CLI delegated token, which
+  `scripts/02-federate-and-register.ps1` uses to avoid the PowerShell module.
 - Microsoft documents no end-to-end "managed identity → Dataverse Web API" flow. This
   project uses the documented workload identity federation path instead, which is GA.
 - Whether change tracking is enabled by default on `conversationtranscript` is not
   documented. It does not matter here, since change tracking is not used.
+- Remote build cannot reach a storage account whose public network access is disabled.
+  See the note in step 5.
+
+## Verification status
+
+Verified against a live tenant and a real Azure Data Explorer cluster:
+
+| Area | Result |
+|---|---|
+| Tenant-wide app-only environment discovery | 13 environments, 12 with Dataverse, 7 eligible |
+| Developer / Teams filtering | Correctly skipped |
+| Dataverse transcript extraction | Real transcripts read across environments |
+| Transport-error retry and per-environment isolation | Exercised twice by real TLS resets |
+| ADX ingestion and JSON mapping | All rows landed, zero parse errors |
+| `CopilotTranscript` dedup materialized view | Correct |
+| `CopilotTranscriptTurn()` | Turns expanded; roles and epoch timestamps decoded correctly |
+| `CopilotConversationPair()` | Verified with a synthetic conversation, including merging consecutive agent replies |
+| Infrastructure | Deploys clean, including private networking |
+
+Not yet verified, because the Function could not be published under the storage policy
+described in step 5: the runtime workload identity federation token exchange, the timer
+trigger firing on schedule, and the Table Storage watermark round trip.
 
 [pp-auth-v2]: https://learn.microsoft.com/en-us/power-platform/admin/programmability-authentication-v2
 [change-tracking]: https://learn.microsoft.com/en-us/power-apps/developer/data-platform/use-change-tracking-synchronize-data-external-systems
