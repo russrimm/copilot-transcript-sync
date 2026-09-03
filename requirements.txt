@@ -1,0 +1,15 @@
+# Azure Functions Python worker
+azure-functions==2.3.0
+
+# Auth: user-assigned managed identity federated to an Entra app registration
+azure-identity==1.25.3
+
+# Watermark store
+azure-data-tables==12.7.0
+
+# Azure Data Explorer ingestion
+azure-kusto-data==6.0.4
+azure-kusto-ingest==6.0.4
+
+# HTTP client for BAP + Dataverse Web API
+httpx==0.28.1

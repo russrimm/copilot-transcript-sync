@@ -1,0 +1,100 @@
+//
+// Copilot Studio transcript archive -- table schema and ingestion mapping.
+//
+// Run against the target database, in order:
+//   01_tables.kql  ->  02_views.kql
+//
+// The raw table is append-only and intentionally accepts duplicates: every sync
+// run replays an overlap window before its watermark, because Dataverse writes a
+// transcript only after 30 minutes of conversation inactivity. Deduplication
+// happens in 02_views.kql.
+//
+
+.create-merge table CopilotTranscriptRaw (
+    EnvironmentId: string,
+    EnvironmentName: string,
+    EnvironmentUrl: string,
+    OrganizationId: string,
+    ConversationTranscriptId: string,
+    Name: string,
+    ConversationId: string,
+    BotId: string,
+    BotName: string,
+    BatchId: string,
+    AadTenantId: string,
+    SchemaType: string,
+    SchemaVersion: string,
+    ConversationStartTime: datetime,
+    CreatedOn: datetime,
+    ModifiedOn: datetime,
+    VersionNumber: long,
+    Metadata: dynamic,
+    Content: dynamic,
+    ContentParseError: string,
+    IngestedAt: datetime
+)
+
+.alter table CopilotTranscriptRaw docstring
+    "Raw Copilot Studio conversation transcripts collected from every Power Platform environment in the tenant. Append-only; may contain duplicates. Query CopilotTranscript instead."
+
+.alter table CopilotTranscriptRaw column-docstrings (
+    ConversationTranscriptId: "Dataverse primary key of the conversationtranscript row. Unique per environment.",
+    Name: "Dataverse Name column: ConversationId + '_' + BotId.",
+    BatchId: "Metadata.BatchId. Transcripts larger than 1 MB are split across rows sharing Name and ConversationStartTime; sort by BatchId to reassemble.",
+    Content: "Raw Bot Framework activity log. Note that from.role is numeric: 0 = agent, 1 = user.",
+    ContentParseError: "Set when the content column could not be parsed as JSON; Content is null in that case.",
+    VersionNumber: "Dataverse row version. Monotonic within an environment.",
+    IngestedAt: "UTC time this sync run read the row. Used to pick the winner when deduplicating."
+)
+
+//
+// Ingestion mapping. Named rather than inline so that adding columns later does
+// not break the running Function.
+//
+.create-or-alter table CopilotTranscriptRaw ingestion json mapping "CopilotTranscriptRawMapping"
+```
+[
+  {"column":"EnvironmentId","Properties":{"Path":"$.EnvironmentId"}},
+  {"column":"EnvironmentName","Properties":{"Path":"$.EnvironmentName"}},
+  {"column":"EnvironmentUrl","Properties":{"Path":"$.EnvironmentUrl"}},
+  {"column":"OrganizationId","Properties":{"Path":"$.OrganizationId"}},
+  {"column":"ConversationTranscriptId","Properties":{"Path":"$.ConversationTranscriptId"}},
+  {"column":"Name","Properties":{"Path":"$.Name"}},
+  {"column":"ConversationId","Properties":{"Path":"$.ConversationId"}},
+  {"column":"BotId","Properties":{"Path":"$.BotId"}},
+  {"column":"BotName","Properties":{"Path":"$.BotName"}},
+  {"column":"BatchId","Properties":{"Path":"$.BatchId"}},
+  {"column":"AadTenantId","Properties":{"Path":"$.AadTenantId"}},
+  {"column":"SchemaType","Properties":{"Path":"$.SchemaType"}},
+  {"column":"SchemaVersion","Properties":{"Path":"$.SchemaVersion"}},
+  {"column":"ConversationStartTime","Properties":{"Path":"$.ConversationStartTime"}},
+  {"column":"CreatedOn","Properties":{"Path":"$.CreatedOn"}},
+  {"column":"ModifiedOn","Properties":{"Path":"$.ModifiedOn"}},
+  {"column":"VersionNumber","Properties":{"Path":"$.VersionNumber"}},
+  {"column":"Metadata","Properties":{"Path":"$.Metadata"}},
+  {"column":"Content","Properties":{"Path":"$.Content"}},
+  {"column":"ContentParseError","Properties":{"Path":"$.ContentParseError"}},
+  {"column":"IngestedAt","Properties":{"Path":"$.IngestedAt"}}
+]
+```
+
+//
+// Retention. The whole point of this pipeline is to outlive the 30-day Dataverse
+// bulk-delete job, so retention here must be materially longer. Adjust to your
+// compliance requirement.
+//
+.alter-merge table CopilotTranscriptRaw policy retention softdelete = 730d recoverability = enabled
+
+// Keep roughly a quarter hot; older data stays queryable from cold storage.
+.alter table CopilotTranscriptRaw policy caching hot = 90d
+
+// Transcripts arrive in modest batches every 30 minutes. Favor fewer, larger
+// extents over ingestion latency.
+.alter table CopilotTranscriptRaw policy ingestionbatching
+```
+{
+    "MaximumBatchingTimeSpan": "00:05:00",
+    "MaximumNumberOfItems": 1000,
+    "MaximumRawDataSizeMB": 1024
+}
+```

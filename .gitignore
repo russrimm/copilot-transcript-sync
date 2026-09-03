@@ -1,0 +1,34 @@
+# Azure Functions
+local.settings.json
+bin/
+obj/
+.python_packages/
+__azurite_db*__.json
+__blobstorage__/
+__queuestorage__/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Azure / IaC
+.azure/
+*.azrm.json
+infra/*.parameters.local.json
+
+# Secrets and local state
+.env
+*.pfx
+*.pem
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

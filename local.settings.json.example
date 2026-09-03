@@ -1,0 +1,30 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+
+    "PP_TENANT_ID": "00000000-0000-0000-0000-000000000000",
+    "PP_APP_CLIENT_ID": "00000000-0000-0000-0000-000000000000",
+
+    "// UAMI_CLIENT_ID": "Leave blank locally so DefaultAzureCredential falls back to 'az login'.",
+    "UAMI_CLIENT_ID": "",
+
+    "ADX_CLUSTER_URI": "https://cts.eastus.kusto.windows.net",
+    "ADX_INGEST_URI": "https://ingest-cts.eastus.kusto.windows.net",
+    "ADX_DATABASE": "CopilotTranscripts",
+    "ADX_RAW_TABLE": "CopilotTranscriptRaw",
+
+    "WATERMARK_TABLE_ENDPOINT": "https://stcts.table.core.windows.net",
+    "WATERMARK_TABLE_NAME": "SyncWatermarks",
+
+    "SYNC_SCHEDULE": "0 */30 * * * *",
+    "INITIAL_BACKFILL_DAYS": "30",
+    "WATERMARK_LOOKBACK_MINUTES": "120",
+    "DATAVERSE_PAGE_SIZE": "25",
+    "MAX_CONCURRENT_ENVIRONMENTS": "4",
+    "AUTO_PROVISION_APP_USER": "true",
+    "EXCLUDED_ENVIRONMENT_TYPES": "Developer,Teams",
+    "READ_ONLY_ROLE_NAME": ""
+  }
+}

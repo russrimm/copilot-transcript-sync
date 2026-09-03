@@ -1,0 +1,163 @@
+//
+// Copilot Studio transcript archive -- deduplication view and parsed projections.
+// Run 01_tables.kql first.
+//
+
+//
+// 1. Deduplication.
+//
+// Each sync run replays an overlap window, so the raw table holds repeats of the
+// same ConversationTranscriptId. Keep the most recently ingested copy.
+//
+.create async materialized-view with (backfill=true, docString="Deduplicated Copilot Studio transcripts, one row per Dataverse conversationtranscript record.")
+    CopilotTranscript on table CopilotTranscriptRaw
+{
+    CopilotTranscriptRaw
+    | summarize arg_max(IngestedAt, *) by ConversationTranscriptId
+}
+
+//
+// 2. Turn-level projection.
+//
+// Expands each transcript's Bot Framework activity log into one row per activity.
+//
+// Two shape hazards are handled explicitly:
+//   * from.role is numeric and inverted from the obvious reading:
+//     0 = agent, 1 = user. Some channels emit the string form instead.
+//   * timestamp is documented as epoch seconds, but ISO 8601 strings appear in
+//     practice, and some channels emit epoch milliseconds.
+//
+.create-or-alter function
+with (
+    docstring = "One row per Copilot Studio conversation activity (turn), expanded from the deduplicated transcript archive.",
+    folder = "CopilotStudio"
+)
+CopilotTranscriptTurn() {
+    CopilotTranscript
+    | where isnotnull(Content)
+    | extend Activities = case(
+        gettype(Content) == "array", Content,
+        gettype(Content) == "dictionary" and isnotnull(Content["activities"]), Content["activities"],
+        dynamic(null))
+    | where isnotnull(Activities)
+    | mv-expand with_itemindex = ActivityIndex Activity = Activities to typeof(dynamic)
+    | extend
+        RawRole = Activity["from"]["role"],
+        RawTimestamp = Activity["timestamp"]
+    | extend
+        RoleText = tolower(tostring(RawRole)),
+        TimestampKind = gettype(RawTimestamp),
+        TimestampNumber = todouble(RawTimestamp)
+    | extend
+        Speaker = case(
+            RoleText in ("1", "user"), "user",
+            RoleText in ("0", "bot", "agent"), "agent",
+            isempty(RoleText), "unknown",
+            RoleText),
+        ActivityTimestamp = case(
+            TimestampKind == "string", todatetime(tostring(RawTimestamp)),
+            TimestampKind == "datetime", todatetime(RawTimestamp),
+            isnull(TimestampNumber), datetime(null),
+            // Values past this magnitude cannot be seconds; treat as milliseconds.
+            TimestampNumber >= 100000000000.0, unixtime_milliseconds_todatetime(tolong(TimestampNumber)),
+            TimestampNumber > 0.0, unixtime_seconds_todatetime(tolong(TimestampNumber)),
+            datetime(null))
+    | project
+        EnvironmentId,
+        EnvironmentName,
+        EnvironmentUrl,
+        ConversationTranscriptId,
+        ConversationId,
+        BotId,
+        BotName,
+        BatchId,
+        ConversationStartTime,
+        CreatedOn,
+        ActivityIndex,
+        ActivityId = tostring(Activity["id"]),
+        ActivityType = tostring(Activity["type"]),
+        ActivityName = tostring(Activity["name"]),
+        ValueType = tostring(Activity["valueType"]),
+        ReplyToId = tostring(Activity["replyToId"]),
+        ChannelId = tostring(Activity["channelId"]),
+        Speaker,
+        FromId = tostring(Activity["from"]["id"]),
+        Text = tostring(Activity["text"]),
+        TextFormat = tostring(Activity["textFormat"]),
+        ActivityTimestamp,
+        ActivityValue = Activity["value"],
+        Attachments = Activity["attachments"],
+        ChannelData = Activity["channelData"],
+        Activity
+}
+
+//
+// 3. Prompt / response pairing.
+//
+// Groups each user message with the agent messages that answer it. Transcripts
+// over 1 MB are split into multiple rows sharing ConversationId and
+// ConversationStartTime, so ordering spans batches: sort by BatchId, then by the
+// activity's position within its own transcript.
+//
+.create-or-alter function
+with (
+    docstring = "Pairs each user prompt with the agent responses that followed it, across transcript batches.",
+    folder = "CopilotStudio"
+)
+CopilotConversationPair() {
+    CopilotTranscriptTurn()
+    | where ActivityType == "message" and isnotempty(Text)
+    | extend
+        ConversationKey = strcat(EnvironmentId, "|", ConversationId, "|", format_datetime(ConversationStartTime, "yyyy-MM-ddTHH:mm:ss")),
+        BatchOrder = coalesce(toint(BatchId), 0)
+    | sort by ConversationKey asc, BatchOrder asc, ActivityIndex asc
+    | extend IsUser = iff(Speaker == "user", 1, 0)
+    | extend TurnNumber = row_cumsum(IsUser, ConversationKey != prev(ConversationKey))
+    | where TurnNumber > 0
+    | summarize
+        UserPrompt = take_anyif(Text, IsUser == 1),
+        PromptTime = minif(ActivityTimestamp, IsUser == 1),
+        AgentResponse = strcat_array(make_list_if(Text, IsUser == 0), "\n"),
+        ResponseTime = maxif(ActivityTimestamp, IsUser == 0),
+        ResponseCount = countif(IsUser == 0),
+        ChannelId = take_any(ChannelId),
+        FromId = take_anyif(FromId, IsUser == 1)
+        by
+            ConversationKey,
+            TurnNumber,
+            EnvironmentId,
+            EnvironmentName,
+            ConversationId,
+            BotId,
+            BotName,
+            ConversationStartTime
+    | extend ResponseLatency = ResponseTime - PromptTime
+    | project-away ConversationKey
+    | order by ConversationStartTime asc, ConversationId asc, TurnNumber asc
+}
+
+//
+// 4. Coverage check.
+//
+// Which environments have reported transcripts recently. An environment that
+// disappears from this list either has no agent traffic, or has transcript
+// saving turned off, or the application user lost access.
+//
+.create-or-alter function
+with (
+    docstring = "Per-environment transcript coverage over a lookback window, for spotting environments that stopped reporting.",
+    folder = "CopilotStudio"
+)
+CopilotTranscriptCoverage(lookback: timespan = 7d) {
+    CopilotTranscript
+    | where CreatedOn > ago(lookback)
+    | summarize
+        Transcripts = count(),
+        Agents = dcount(BotId),
+        Conversations = dcount(ConversationId),
+        FirstSeen = min(CreatedOn),
+        LastSeen = max(CreatedOn),
+        ParseFailures = countif(isnotempty(ContentParseError))
+        by EnvironmentId, EnvironmentName
+    | order by Transcripts desc
+}
