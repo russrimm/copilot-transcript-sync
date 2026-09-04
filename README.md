@@ -68,46 +68,38 @@ flowchart TB
       materialized view, and are projected into turn-level and prompt-pair views.
     }
 
-    Timer["Timer trigger<br/>every 30 minutes"] --> Func
+    Timer["Timer trigger, every 30 minutes"] --> Func
 
     subgraph Azure["Azure subscription"]
         Func["Azure Function<br/>Python 3.13, Flex Consumption"]
-        UAMI(["User-assigned managed identity<br/>the only credential that exists"])
-        Watermark[("Table Storage<br/>per-environment watermarks")]
-        Func --- UAMI
-        Func <-->|"reads then advances watermark"| Watermark
+        UAMI["User-assigned managed identity<br/>the only credential that exists"]
+        Watermark["Table Storage<br/>per-environment watermarks"]
+        Func --> UAMI
+        Func --> Watermark
     end
 
     subgraph Entra["Microsoft Entra ID"]
-        App(["App registration<br/>no client secret"])
+        App["App registration<br/>no client secret"]
     end
-
-    UAMI -->|"workload identity federation:<br/>exchange MI token for app token"| App
 
     subgraph PP["Power Platform tenant"]
-        BAP["BAP admin API<br/>lists all environments"]
-        DV1["Dataverse environment 1<br/>conversationtranscript"]
-        DVn["Dataverse environment N<br/>conversationtranscript"]
+        BAP["BAP admin API<br/>lists every environment"]
+        DV["Dataverse, per environment<br/>conversationtranscript"]
     end
-
-    App -->|"app-only token for<br/>service.powerapps.com"| BAP
-    App -->|"app-only token<br/>scoped per organization"| DV1
-    App -->|"app-only token<br/>scoped per organization"| DVn
-
-    BAP -.->|"returns environment list"| Func
-    DV1 -.->|"returns transcript rows"| Func
-    DVn -.->|"returns transcript rows"| Func
 
     subgraph ADX["Azure Data Explorer"]
-        Raw[("CopilotTranscriptRaw<br/>append-only landing table")]
-        MV[("CopilotTranscript<br/>deduplicated materialized view")]
-        Turn["CopilotTranscriptTurn()<br/>one row per activity"]
-        Pair["CopilotConversationPair()<br/>prompt paired with replies"]
-        Raw -->|"keeps latest row per transcript id"| MV
-        MV -->|"expands the activity log"| Turn
-        Turn -->|"groups replies under each prompt"| Pair
+        Raw["CopilotTranscriptRaw<br/>append-only landing table"]
+        MV["CopilotTranscript<br/>deduplicated view"]
+        Turn["CopilotTranscriptTurn<br/>one row per activity"]
+        Pair["CopilotConversationPair<br/>prompt paired with replies"]
+        Raw --> MV --> Turn --> Pair
     end
 
+    UAMI -->|"federation: exchange MI token for app token"| App
+    App -->|"app-only token"| BAP
+    App -->|"app-only token, scoped per org"| DV
+    BAP -.->|"environment list"| Func
+    DV -.->|"transcript rows"| Func
     Func -->|"queued ingestion"| Raw
 ```
 
@@ -1080,11 +1072,19 @@ forces storage private, so the simpler topology is reasoned about but untested.
 
 ## Diagram rendering
 
-Diagrams use Mermaid with `accTitle` and `accDescr` accessibility metadata, and each is
-paired with a visible text equivalent so the information is available without rendering the
-diagram. They target GitHub's Markdown Mermaid renderer, which is platform-managed rather than
-pinned — if you publish this elsewhere, confirm that surface renders them and preserves the
-generated `<title>` and `<desc>` elements.
+Diagrams use Mermaid with `accTitle` and `accDescr` accessibility metadata, and each is paired
+with a visible text equivalent so the information is available without rendering the diagram.
+
+They were verified against GitHub's own renderer, observed as **Mermaid v11.17.0 on
+2026-09-04**. That renderer is platform-managed rather than pinned, so re-check after GitHub
+updates, and confirm separately if you publish elsewhere.
+
+> **If a diagram shows "Unable to render rich display — Cannot read properties of undefined
+> (reading 'render')", reload the page.** That is a client-side race in GitHub's Mermaid
+> loader, not invalid diagram source: `render()` is called before the module finishes loading.
+> The first diagram on a page is the most exposed to it. Every diagram here renders
+> consistently on repeated loads, and the text equivalent below each one carries the same
+> information if it fails.
 
 [pp-auth-v2]: https://learn.microsoft.com/en-us/power-platform/admin/programmability-authentication-v2
 [change-tracking]: https://learn.microsoft.com/en-us/power-apps/developer/data-platform/use-change-tracking-synchronize-data-external-systems
