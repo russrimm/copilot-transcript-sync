@@ -21,6 +21,7 @@ exceeds what the source keeps.
 - [Implementation](#implementation)
 - [Operating the pipeline](#operating-the-pipeline)
 - [Querying the archive](#querying-the-archive)
+- [Power BI template](#power-bi-template)
 - [Configuration](#configuration)
 - [Security posture](#security-posture)
 - [Repository layout](#repository-layout)
@@ -782,6 +783,119 @@ CopilotTranscriptTurn()
 | `CopilotConversationPair()` | Function | Each user prompt with the agent replies that followed |
 | `CopilotTranscriptCoverage(timespan)` | Function | Per-environment reporting health |
 
+### The analytics layer
+
+Raw activities answer "what was said". Reporting needs "how is Copilot Studio
+being used", which is a different grain. Three further KQL files build that on
+top of the same archive, so nothing extra is stored twice.
+
+`kql/03_sessions.kql` reshapes activities into one row per session — the unit
+Copilot Studio itself bills and reports on:
+
+| Object | Use |
+|---|---|
+| `CopilotSession()` | One row per session: outcome, turn count, duration, design-mode flag, resolved user |
+| `CopilotAgentKpi(lookback, includeDesignMode)` | Sessions, engagement, resolution, escalation and abandon rates per agent |
+| `CopilotDailyTrend(lookback, includeDesignMode)` | Daily session and user counts for trend visuals |
+| `CopilotDesignModeSplit(lookback)` | Real traffic against test-pane traffic, per agent |
+
+`kql/04_agents.kql` adds an agent dimension synced from the Dataverse `bot`
+table, so reports can show display names, publish state and authentication
+mode rather than schema names:
+
+| Object | Use |
+|---|---|
+| `CopilotAgent()` | Deduplicated agent metadata, latest row per agent |
+| `CopilotAgentInventory(lookback, includeDesignMode)` | Every agent joined to its usage, including agents with none |
+| `CopilotUnusedAgents(lookback)` | Published agents with no sessions in the window |
+
+`kql/05_users.kql` adds an Entra user dimension resolved through Microsoft
+Graph, which is what makes departmental adoption reporting possible:
+
+| Object | Use |
+|---|---|
+| `CopilotUser()` | Deduplicated user metadata, latest row per object ID |
+| `CopilotSessionByUser(lookback, includeDesignMode)` | Sessions attributed to a named user |
+| `CopilotAdoptionByDepartment(lookback)` | Adoption grouped by department |
+| `CopilotAdoptionByJobTitle(lookback, minSessions)` | Adoption grouped by job title |
+| `CopilotAttributionCoverage(lookback)` | What share of sessions can be attributed to a user at all |
+
+Two properties of this data decide whether a report is honest, and both are
+measured rather than assumed:
+
+**Most sessions in a typical tenant are test-pane traffic.** Copilot Studio
+records authoring-time conversations with `isDesignMode` set. In the tenant
+this was built against, 28 of 33 sessions were design mode — 85%. Every
+function above defaults `includeDesignMode` to `false` for that reason. Turn it
+on deliberately, not by accident.
+
+**Only authenticated channels attribute a session to a person.** `from.id` is
+hashed and is not an Entra object ID. Attribution depends on
+`from.aadObjectId`, which unauthenticated channels never send. Run
+`CopilotAttributionCoverage()` before presenting any per-user or per-department
+number, because those breakdowns only ever describe the attributable share.
+
+User sync is therefore **off by default** (`SYNC_USERS`, see
+[Configuration](#configuration)). It calls Microsoft Graph and stores display
+name, job title, department and office for people who used an agent. Enable it
+only where that is appropriate for your tenant, and grant the Graph permission
+with `scripts/grant_graph_permission.ps1`.
+
+---
+
+## Power BI template
+
+`powerbi/CopilotStudioAnalytics.pbit` is a template — not a report bound to
+this deployment — so it prompts for the cluster and database on open and
+carries no tenant data.
+
+Build it from source:
+
+```powershell
+python powerbi/build_template.py
+```
+
+Open the generated `.pbit` and supply four parameters:
+
+| Parameter | Example | Purpose |
+|---|---|---|
+| `ClusterUri` | `https://adxexample.eastus.kusto.windows.net` | Your Azure Data Explorer cluster |
+| `DatabaseName` | `CopilotTranscripts` | Database created in step 4 |
+| `LookbackDays` | `90` | Window loaded into the model |
+| `IncludeTestPane` | `false` | Whether design-mode sessions are included |
+
+The model is a star schema: a `Sessions` fact against `Agents`, `Users`,
+`Environments` and `Dates` dimensions, with 26 measures and four report pages —
+Overview, Agents, Adoption and Governance. Every query behind it is one of the
+KQL functions above, so the report and ad-hoc analysis cannot drift apart.
+
+Refresh signs in as you, so you need **Viewer** on the database. The template
+loads with import storage mode; on a Dev-tier cluster keep `LookbackDays`
+modest.
+
+### About the `.pbit` format
+
+The generator writes the package by hand because no supported Microsoft library
+produces one. Four details are undocumented, and each one on its own makes
+Power BI Desktop reject the file with only *"We couldn't open your file… it may
+be corrupted"*:
+
+* `DataMashup` is a version field followed by **four** length-prefixed sections
+  — the Power Query ZIP, a permissions XML, a metadata block and permission
+  bindings. Writing only the version and the ZIP truncates the part.
+* The metadata block is itself a version, a length-prefixed UTF-8 XML document
+  and a length-prefixed content blob.
+* Most parts are UTF-16LE with **no** BOM, but `[Content_Types].xml` is UTF-8
+  **with** one.
+* `[Content_Types].xml` may not declare a part that is absent. `SecurityBindings`
+  is a DPAPI blob tied to the authoring machine, so a redistributable template
+  omits both the part and its declaration.
+
+These were read off a Microsoft-published template
+(*Microsoft 365 Usage Analytics*) rather than guessed, and
+`build_template.py` re-parses its own output to confirm every section length
+adds up before writing.
+
 ---
 
 ## Configuration
@@ -794,6 +908,8 @@ CopilotTranscriptTurn()
 | `DATAVERSE_PAGE_SIZE` | `25` | `odata.maxpagesize`. Each row can carry 1 MB, so large pages mean very large responses |
 | `AUTO_PROVISION_APP_USER` | `true` | Whether to call `addAppUser` for newly discovered environments |
 | `EXCLUDED_ENVIRONMENT_TYPES` | *(empty)* | Environment SKUs to skip, comma separated. Empty by default, because skipping a type that does hold transcripts loses that data permanently. Measure before setting it |
+| `SYNC_AGENTS` | `true` | Sync the Dataverse `bot` table into the agent dimension. Cheap, and needed for display names |
+| `SYNC_USERS` | `false` | Resolve Entra users through Microsoft Graph into the user dimension. Off by default because it stores personal attributes. See [The analytics layer](#the-analytics-layer) |
 | `PP_TENANT_ID` | — | Tenant hosting the Power Platform environments |
 | `PP_APP_CLIENT_ID` | — | App registration from step 1 |
 | `UAMI_CLIENT_ID` | — | Managed identity client ID. Leave blank locally to fall back to `az login` |
@@ -854,6 +970,8 @@ copilot-transcript-sync/
 │   ├── http.py                         Bearer tokens, 429/Retry-After handling
 │   ├── powerplatform.py                BAP discovery and application user provisioning
 │   ├── dataverse.py                    conversationtranscript extraction
+│   ├── agents.py                       bot table extraction for the agent dimension
+│   ├── users.py                        Microsoft Graph lookup for the user dimension
 │   ├── watermarks.py                   Per-environment watermarks in Table Storage
 │   ├── adx.py                          Queued ingestion into Azure Data Explorer
 │   └── sync.py                         Orchestration and per-environment isolation
@@ -862,15 +980,27 @@ copilot-transcript-sync/
 │
 ├── kql/
 │   ├── 01_tables.kql                   Landing table, ingestion mapping, policies
-│   └── 02_views.kql                    Dedup materialized view and query functions
+│   ├── 02_views.kql                    Dedup materialized view and query functions
+│   ├── 03_sessions.kql                 Session facts and agent KPIs
+│   ├── 04_agents.kql                   Agent dimension and inventory
+│   └── 05_users.kql                    Entra user dimension and adoption
+│
+├── powerbi/
+│   ├── Section1.m                      Power Query parameters and table queries
+│   ├── model.py                        Tabular model: tables, relationships, measures
+│   ├── layout.py                       Report pages and visuals
+│   └── build_template.py               Assembles CopilotStudioAnalytics.pbit
 │
 ├── scripts/
 │   ├── install.ps1                     One-command install, chains all seven steps
 │   ├── uninstall.ps1                   One-command removal, including tenant objects
 │   ├── 01-create-app-registration.ps1  Bootstrap phase 1
 │   ├── 02-federate-and-register.ps1    Bootstrap phase 2
+│   ├── grant_graph_permission.ps1      Grants User.Read.All to the managed identity
 │   ├── deploy_kql.py                   Applies the KQL schema
 │   ├── verify_install.py               Post-install health check, non-zero on failure
+│   ├── probe_all_environments.py       Measures transcript counts per environment
+│   ├── probe_table_schema.py           Dumps a Dataverse table's real column set
 │   ├── smoke_discovery.py              Live tenant environment listing
 │   ├── smoke_extract.py                Live extraction and ingestion
 │   ├── smoke_pairing.py                Pairing check with synthetic data
@@ -931,6 +1061,10 @@ These talk to the real tenant and cluster, and are not part of `pytest`:
 | Rows in `CopilotTranscriptRaw` but none in `CopilotTranscript` | The materialized view was cleared, or is still materializing | Drop the view and re-run `deploy_kql.py` |
 | `CopilotConversationPair()` returns nothing | The transcripts are greeting-only sessions with no user-typed messages | Check `CopilotTranscriptTurn()` for `Speaker == "user"` and `ActivityType == "message"` |
 | Repeated TLS resets against Dataverse | Transient, or an environment-level IP firewall | Retries and per-environment isolation handle it; check the run report |
+| Every ADX call fails as an opaque network error | The cluster is stopped. A stopped cluster does not restart on a query | `az kusto cluster start`. The Bicep sets `enableAutoStop: false`, but a subscription cost automation can still stop it |
+| `HTTP transport has already been closed` mid-run | The Kusto SDK closes any credential handed to it, so a shared instance breaks later consumers | Each consumer builds its own credential; do not reintroduce a cached one |
+| User dimension stays empty with `SYNC_USERS=true` | `User.Read.All` not granted to the managed identity | Run `scripts/grant_graph_permission.ps1`. `az ad app permission` does not work for managed identities |
+| Power BI reports the `.pbit` is corrupted | A hand-written package part is malformed | Rebuild with `python powerbi/build_template.py`; it re-parses its own output. See [About the `.pbit` format](#about-the-pbit-format) |
 
 ---
 
@@ -1040,14 +1174,25 @@ Behavior confirmed by the same run:
 | Watermark persistence | Second run returned only the overlap window, proving the Table Storage round trip over a private endpoint |
 | Overlap deduplication under repeated runs | 18 raw rows across three runs collapsed to 8 distinct transcripts |
 | Timer trigger | Fired autonomously on schedule and ingested the overlap window |
+| Agent dimension | 120 agents synced; join verified against `_bot_conversationtranscriptid_value`, not `metadata.BotId` |
+| Entra user dimension | Resolved end to end through Microsoft Graph after granting `User.Read.All` to the managed identity |
+| Session facts | 33 sessions built from raw activities; `CopilotDesignModeSplit()` correctly separated 28 test-pane from 5 real sessions |
+| Power BI template | Opened in Power BI Desktop 2.157.1354.0. Model verified against the local Analysis Services engine: 5 tables, 26 measures, 4 relationships, 4 parameters |
 | Teardown | Resource group, application users, management app registration, and app registration all removed and verified |
-| Unit tests | 44 passing, no Azure required |
+| Unit tests | 64 passing, no Azure required |
 
 Transcript counts differ between installs (8 then 7) because Dataverse had bulk-deleted one
 transcript past its 30-day retention in the interim — which is the reason this pipeline exists.
 
 Not exercised: `enablePrivateNetworking=false`. Every deployment here ran under a policy that
 forces storage private, so the simpler topology is reasoned about but untested.
+
+The Power BI template was verified structurally — it opens and the model loads — against a
+tenant holding only 5 non-test-pane sessions and 1 attributable user. The visuals are correct
+but sparse at that volume, and `CopilotAttributionCoverage()` is worth running before reading
+anything into the Adoption page. A refresh against a live cluster was **not** part of that
+check: the template ships with placeholder parameter defaults, so the first refresh happens
+only once you supply your own cluster.
 
 ---
 
