@@ -891,10 +891,20 @@ be corrupted"*:
   is a DPAPI blob tied to the authoring machine, so a redistributable template
   omits both the part and its declaration.
 
+One further value is version-sensitive rather than structural, and it fails in a
+way that looks like success. The `Version` part must match what the installed
+Power BI Desktop writes — currently `1.30`. An older value still *opens*, and
+still prompts for parameters, but triggers an upgrade pass that leaves the
+values you typed sitting in an `UnappliedChanges` part instead of applying them.
+The document then never finishes loading and Power BI quietly returns to its
+start screen with no error at all. The give-away is a file appearing in
+`%LOCALAPPDATA%\Microsoft\Power BI Desktop\TempSaves\Backups` named
+`<template>_UpgradeFrom<version>.pbix`.
+
 These were read off a Microsoft-published template
-(*Microsoft 365 Usage Analytics*) rather than guessed, and
-`build_template.py` re-parses its own output to confirm every section length
-adds up before writing.
+(*Microsoft 365 Usage Analytics*) and off Power BI's own output rather than
+guessed, and `build_template.py` re-parses its own output to confirm every
+section length adds up before writing.
 
 ---
 
@@ -1065,6 +1075,7 @@ These talk to the real tenant and cluster, and are not part of `pytest`:
 | `HTTP transport has already been closed` mid-run | The Kusto SDK closes any credential handed to it, so a shared instance breaks later consumers | Each consumer builds its own credential; do not reintroduce a cached one |
 | User dimension stays empty with `SYNC_USERS=true` | `User.Read.All` not granted to the managed identity | Run `scripts/grant_graph_permission.ps1`. `az ad app permission` does not work for managed identities |
 | Power BI reports the `.pbit` is corrupted | A hand-written package part is malformed | Rebuild with `python powerbi/build_template.py`; it re-parses its own output. See [About the `.pbit` format](#about-the-pbit-format) |
+| Template prompts for parameters, then returns to the Power BI start screen with no error | The `Version` part is older than the installed Power BI Desktop, so the values land in `UnappliedChanges` instead of being applied | Check `TempSaves\Backups` for an `_UpgradeFrom<version>.pbix`, then set `Version` to match. See [About the `.pbit` format](#about-the-pbit-format) |
 
 ---
 
@@ -1177,7 +1188,8 @@ Behavior confirmed by the same run:
 | Agent dimension | 120 agents synced; join verified against `_bot_conversationtranscriptid_value`, not `metadata.BotId` |
 | Entra user dimension | Resolved end to end through Microsoft Graph after granting `User.Read.All` to the managed identity |
 | Session facts | 33 sessions built from raw activities; `CopilotDesignModeSplit()` correctly separated 28 test-pane from 5 real sessions |
-| Power BI template | Opened in Power BI Desktop 2.157.1354.0. Model verified against the local Analysis Services engine: 5 tables, 26 measures, 4 relationships, 4 parameters |
+| Power BI template | Opened in Power BI Desktop 2.157.1354.0. Model verified against the local Analysis Services engine: 5 tables, 26 measures, 4 relationships, 4 parameters. Report layout verified intact: 4 pages, 39 visuals |
+| Template Kusto queries | All four run against the live cluster with the expected shape: Sessions 5 rows, Agents 120, Users 1, Environments 12 |
 | Teardown | Resource group, application users, management app registration, and app registration all removed and verified |
 | Unit tests | 64 passing, no Azure required |
 

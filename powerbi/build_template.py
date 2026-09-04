@@ -20,6 +20,13 @@ reject the file with only "We couldn't open your file... it may be corrupted":
   machine that wrote them. A template cannot carry meaningful ones, so this
   writes an empty binding and omits the part.
 
+One further value is version-sensitive rather than structural. The ``Version``
+part must match what the installed Power BI Desktop writes. An older value is
+still accepted and the file opens, but it triggers an upgrade pass that leaves
+the parameter values you supply sitting in an ``UnappliedChanges`` part instead
+of being applied, and the document never finishes loading. ``1.30`` was read
+back out of a file Power BI produced itself, not guessed.
+
     python powerbi/build_template.py
     python powerbi/build_template.py --out dist/CopilotStudioAnalytics.pbit
 """
@@ -222,7 +229,7 @@ def write_template(out_path: pathlib.Path) -> pathlib.Path:
         return text.encode(UTF16)
 
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as pbit:
-        pbit.writestr("Version", utf16("1.19"))
+        pbit.writestr("Version", utf16("1.30"))
         pbit.writestr("[Content_Types].xml", CONTENT_TYPES)
         pbit.writestr("DataMashup", build_data_mashup(section_m))
         pbit.writestr(
