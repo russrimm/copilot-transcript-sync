@@ -440,6 +440,32 @@ Useful parameters:
 | `adxSoftDeletePeriod` | `P730D` | Must exceed the 30-day Dataverse retention this pipeline outlives |
 | `syncSchedule` | `0 */30 * * * *` | Timer NCRONTAB |
 
+> **If the deployment fails with `InsufficientResourcesForSubscription`**, the region has no
+> capacity for that Azure Data Explorer SKU right now. It is a transient shortage, not a quota
+> or a template problem, and retrying the same SKU often fails again. Use a different one:
+>
+> ```powershell
+> az deployment group create `
+>   --resource-group rg-copilot-transcripts `
+>   --template-file infra/main.bicep `
+>   --parameters powerPlatformAppClientId=<client-id> `
+>                adxSkuName='Dev(No SLA)_Standard_D11_v2'
+> ```
+>
+> List what your subscription can actually place in a region before guessing:
+>
+> ```powershell
+> $sub = az account show --query id -o tsv
+> $t = az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv
+> (Invoke-RestMethod -Headers @{Authorization = "Bearer $t"} `
+>   -Uri "https://management.azure.com/subscriptions/$sub/providers/Microsoft.Kusto/skus?api-version=2024-04-13").value |
+>   Where-Object { $_.resourceType -eq 'clusters' -and $_.locations -contains 'eastus' } |
+>   ForEach-Object { $_.name } | Sort-Object -Unique
+> ```
+>
+> A failed cluster rolls back cleanly and the template is idempotent, so re-running only
+> creates what is missing.
+
 ### Step 3 — Federate the identity and register with Power Platform
 
 ```powershell
@@ -798,7 +824,8 @@ copilot-transcript-sync/
 │   ├── smoke_discovery.py              Live tenant environment listing
 │   ├── smoke_extract.py                Live extraction and ingestion
 │   ├── smoke_pairing.py                Pairing check with synthetic data
-│   └── cleanup_smoke_data.py           Removes synthetic test data
+│   ├── cleanup_smoke_data.py           Removes synthetic test data
+│   └── cleanup_app_users.py            Removes Dataverse application users tenant-wide
 │
 └── tests/                              pytest suite, no Azure required
 ```
@@ -835,6 +862,7 @@ These talk to the real tenant and cluster, and are not part of `pytest`:
 | `scripts/smoke_extract.py` | Dataverse extraction and ingestion across every eligible environment |
 | `scripts/smoke_pairing.py` | `CopilotConversationPair()` against a synthetic conversation, cleaning up after itself |
 | `scripts/cleanup_smoke_data.py` | Removes leftover synthetic rows |
+| `scripts/cleanup_app_users.py` | Reports or removes the Dataverse application users across every environment |
 
 ---
 
@@ -849,6 +877,7 @@ These talk to the real tenant and cluster, and are not part of `pytest`:
 | Publish fails at `StorageAccessibleCheck` | Remote build cannot use a private storage account | Use the local-build path in step 5 |
 | Publish succeeds but **no functions listed** | `--no-build` shipped without dependencies | Populate `.python_packages` first |
 | Deployment fails on a `PrincipalAssignment` | `adxAdminPrincipalId` duplicates the Admin that ADX grants the deployer | Omit the parameter |
+| Deployment fails with `InsufficientResourcesForSubscription` | No regional capacity for that ADX SKU | Deploy a different `adxSkuName`, or a different region. See step 2 |
 | Rows in `CopilotTranscriptRaw` but none in `CopilotTranscript` | The materialized view was cleared, or is still materializing | Drop the view and re-run `deploy_kql.py` |
 | `CopilotConversationPair()` returns nothing | The transcripts are greeting-only sessions with no user-typed messages | Check `CopilotTranscriptTurn()` for `Speaker == "user"` and `ActivityType == "message"` |
 | Repeated TLS resets against Dataverse | Transient, or an environment-level IP firewall | Retries and per-environment isolation handle it; check the run report |
@@ -866,22 +895,31 @@ Deleting the resource group does **not** remove the tenant-level objects. Those 
 cleanup:
 
 ```powershell
-# Unregister the Power Platform management application
-Import-Module Microsoft.PowerApps.Administration.PowerShell
-Add-PowerAppsAccount -Endpoint prod -TenantID <tenant-id>
-Remove-PowerAppManagementApp -ApplicationId <client-id>
+# 1. Remove the Dataverse application users from every environment
+python scripts/cleanup_app_users.py --client-id <client-id>            # report first
+python scripts/cleanup_app_users.py --client-id <client-id> --delete   # then remove
 
-# Remove the app registration and its service principal
+# 2. Unregister the Power Platform management application
+$t = az account get-access-token --resource "https://service.powerapps.com/" --query accessToken -o tsv
+Invoke-RestMethod -Method DELETE -Headers @{Authorization = "Bearer $t"} `
+  -Uri "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/adminApplications/<client-id>?api-version=2020-10-01"
+
+# 3. Remove the app registration and its service principal
 az ad app delete --id <client-id>
 ```
 
-Application users created by `addAppUser` remain in each environment and must be removed per
-environment in the Power Platform admin center under **Settings → Users + permissions →
-Application users**.
+Do step 1 **before** step 3. Removing the application users needs the environment list, and
+that is easiest while the app still exists.
 
-> Deleting the app registration invalidates the application users bound to its client ID, but
-> it does not delete the user records themselves. In a tenant with many environments, plan
-> that cleanup before you provision rather than after.
+> The admin center documents only a manual, per-environment removal of application users, and
+> the Dataverse Web API has no documented recipe for it either. It does work: disable the
+> `systemuser` record with `PATCH isdisabled=true`, then `DELETE` it.
+> `scripts/cleanup_app_users.py` does this across the tenant, verified against 7 environments.
+
+Step 2 uses a REST `DELETE` that Microsoft does not document but which works and is verified
+here. The documented equivalent is `Remove-PowerAppManagementApp -ApplicationId <client-id>`
+from the `Microsoft.PowerApps.Administration.PowerShell` module, if you prefer the supported
+path.
 
 ---
 
@@ -909,16 +947,27 @@ Application users**.
 
 ## Verification status
 
-Verified end to end against a live tenant, with the Function running in Azure:
+Verified by a **complete teardown and clean reinstall**, following the steps in this README
+exactly, from an empty resource group and a tenant with no prior app registration:
+
+| Step | Result |
+|---|---|
+| 1. Create app registration | Worked. Script's own next-step output contradicted this README and was corrected |
+| 2. Deploy infrastructure | Template correct. Regional Azure Data Explorer capacity rejected the default SKU twice; an alternative Dev SKU succeeded |
+| 3. Federate and register | Worked first try |
+| 4. Apply the KQL schema | Worked first try on a genuinely fresh database |
+| 5. Publish the Function | Worked first try via the documented local-build path; both triggers indexed |
+| 6. First run | 12 environments discovered, 7 transcripts ingested, 0 failures |
+| 7. Verify | 0 parse errors, 0 ingestion failures, coverage correct |
+
+Behavior confirmed by the same run:
 
 | Area | Result |
 |---|---|
 | Tenant-wide app-only environment discovery | 12 environments with Dataverse, 7 eligible |
-| Developer / Teams filtering | Correctly skipped |
+| Developer / Teams filtering | Correctly skipped, and no application user was provisioned in them |
 | Workload identity federation at runtime | Function reached Power Platform with no secret |
-| Dataverse transcript extraction | 8 transcripts read across environments |
-| Application user auto-provisioning | Ran clean across all eligible environments |
-| Transport-error retry and per-environment isolation | Exercised by real TLS resets |
+| Application user auto-provisioning from scratch | Created in all 7 eligible environments for a brand-new client ID |
 | ADX ingestion and JSON mapping | All rows landed, zero parse errors |
 | `CopilotTranscript` dedup materialized view | Correct |
 | `CopilotTranscriptTurn()` | Turns expanded; roles and epoch timestamps decoded correctly |
@@ -926,8 +975,14 @@ Verified end to end against a live tenant, with the Function running in Azure:
 | Watermark persistence | Second run returned only the overlap window, proving the Table Storage round trip over a private endpoint |
 | Overlap deduplication under repeated runs | 18 raw rows across three runs collapsed to 8 distinct transcripts |
 | Timer trigger | Fired autonomously on schedule and ingested the overlap window |
-| Infrastructure | Deploys clean, including private networking |
+| Teardown | Resource group, application users, management app registration, and app registration all removed and verified |
 | Unit tests | 44 passing, no Azure required |
+
+Transcript counts differ between installs (8 then 7) because Dataverse had bulk-deleted one
+transcript past its 30-day retention in the interim — which is the reason this pipeline exists.
+
+Not exercised: `enablePrivateNetworking=false`. Every deployment here ran under a policy that
+forces storage private, so the simpler topology is reasoned about but untested.
 
 ---
 

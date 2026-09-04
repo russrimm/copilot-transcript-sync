@@ -82,6 +82,10 @@ Write-Host "Next: deploy the infrastructure, passing the client ID:" -Foreground
 Write-Host "  az deployment group create ``"
 Write-Host "    --resource-group <rg> ``"
 Write-Host "    --template-file infra/main.bicep ``"
-Write-Host "    --parameters powerPlatformAppClientId=$appId adxAdminPrincipalId=<your-object-id>"
+Write-Host "    --parameters powerPlatformAppClientId=$appId"
+Write-Host ""
+Write-Host "Do not pass adxAdminPrincipalId with your own object ID. Azure Data Explorer" -ForegroundColor Yellow
+Write-Host "already grants Admin to whoever deploys the database, and adding it again fails" -ForegroundColor Yellow
+Write-Host "the deployment. That parameter is only for granting an ADDITIONAL principal." -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Then run scripts/02-federate-and-register.ps1." -ForegroundColor Cyan
