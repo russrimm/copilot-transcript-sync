@@ -45,6 +45,9 @@ param adxSkuTier string = 'Basic'
 @description('ADX instance count. Dev SKUs support only 1.')
 param adxCapacity int = 1
 
+@description('Whether Azure Data Explorer may automatically stop the cluster when it is inactive. Left off because a stopped cluster does not restart itself, and the sync then fails with an opaque network error rather than anything naming the real cause.')
+param adxEnableAutoStop bool = false
+
 @description('Hot cache period for the ADX database.')
 param adxHotCachePeriod string = 'P90D'
 
@@ -72,7 +75,7 @@ param initialBackfillDays int = 30
 @description('Minutes of overlap replayed before the stored watermark on each run.')
 param watermarkLookbackMinutes int = 120
 
-@description('Environment SKUs to skip, comma separated. Empty by default: Microsoft documents that Developer environments never persist transcripts, but they demonstrably do, so excluding a type silently loses data. Measure with scripts/probe_all_environments.py before setting this.')
+@description('Environment SKUs to skip, comma separated. Empty by default, because skipping a type that does hold transcripts loses that data permanently. Measure with scripts/probe_all_environments.py before setting this.')
 param excludedEnvironmentTypes string = ''
 
 @description('Whether the Function should auto-provision the Dataverse application user in newly discovered environments.')
@@ -209,6 +212,7 @@ resource adxCluster 'Microsoft.Kusto/clusters@2024-04-13' = {
   properties: {
     enableStreamingIngest: false
     enableDiskEncryption: true
+    enableAutoStop: adxEnableAutoStop
     publicNetworkAccess: 'Enabled'
   }
 }
@@ -556,9 +560,9 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         }
         {
           name: 'EXCLUDED_ENVIRONMENT_TYPES'
-          // Empty on purpose. Microsoft documents that Developer environments
-          // never persist transcripts, but they demonstrably do, and excluding a
-          // type silently loses data. Opt out only after measuring your tenant.
+          // Empty on purpose. Skipping an environment type that does hold
+          // transcripts loses that data permanently, so exclusion is opt-in
+          // and should follow a measurement of your own tenant.
           value: excludedEnvironmentTypes
         }
       ]

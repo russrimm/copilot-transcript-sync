@@ -264,3 +264,45 @@ def _safe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def extract_aad_object_ids(content: Any) -> set[str]:
+    """Pull Entra object IDs out of a parsed transcript content payload.
+
+    ``from.id`` is hashed and cannot be resolved to a person, but authenticated
+    channels also carry ``from.aadObjectId``, which is the real object ID. Only
+    the latter is returned.
+
+    Handles all three observed content encodings, and never raises: a malformed
+    payload yields no IDs rather than failing the run.
+    """
+    activities: Any = None
+
+    if isinstance(content, list):
+        activities = content
+    elif isinstance(content, dict):
+        activities = content.get("activities")
+        if activities is None and isinstance(content.get("text"), str):
+            try:
+                decoded = json.loads(content["text"])
+            except (ValueError, TypeError):
+                decoded = None
+            if isinstance(decoded, list):
+                activities = decoded
+            elif isinstance(decoded, dict):
+                activities = decoded.get("activities")
+
+    if not isinstance(activities, list):
+        return set()
+
+    found: set[str] = set()
+    for activity in activities:
+        if not isinstance(activity, dict):
+            continue
+        sender = activity.get("from")
+        if not isinstance(sender, dict):
+            continue
+        object_id = sender.get("aadObjectId")
+        if isinstance(object_id, str) and object_id.strip():
+            found.add(object_id.strip())
+    return found

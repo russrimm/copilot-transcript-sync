@@ -46,26 +46,29 @@ TOKEN_EXCHANGE_AUDIENCE = "api://AzureADTokenExchange"
 POWERAPPS_SCOPE = "https://service.powerapps.com//.default"
 
 
-@lru_cache(maxsize=2)
-def _azure_credential(uami_client_id: str) -> TokenCredential:
-    if uami_client_id:
-        return ManagedIdentityCredential(client_id=uami_client_id)
+def azure_credential(settings: Settings) -> TokenCredential:
+    """Credential for Azure Data Explorer and Table Storage.
+
+    A NEW instance is returned on every call, deliberately. The Kusto SDK closes
+    the credential it was given when its client is closed, so sharing one
+    instance across several clients leaves later consumers holding a closed
+    transport and failing with "HTTP transport has already been closed".
+
+    In Azure this resolves to the user-assigned managed identity. Locally,
+    ``UAMI_CLIENT_ID`` is left blank and DefaultAzureCredential falls back to the
+    developer's ``az login`` session.
+    """
+    if settings.uami_client_id:
+        return ManagedIdentityCredential(client_id=settings.uami_client_id)
     logger.info(
         "UAMI_CLIENT_ID not set; falling back to DefaultAzureCredential for Azure resources."
     )
     return DefaultAzureCredential()
 
 
-def azure_credential(settings: Settings) -> TokenCredential:
-    """Credential for Azure Data Explorer and Table Storage.
-
-    In Azure this resolves to the user-assigned managed identity. Locally,
-    ``UAMI_CLIENT_ID`` is left blank and DefaultAzureCredential falls back to the
-    developer's ``az login`` session.
-    """
-    return _azure_credential(settings.uami_client_id)
-
-
+# Cached, unlike azure_credential. This one is only ever used through
+# TokenProvider for HTTP calls we make ourselves, so nothing closes it. The
+# Azure credential is handed to Kusto clients, which close it.
 @lru_cache(maxsize=2)
 def _power_platform_credential(
     tenant_id: str, app_client_id: str, uami_client_id: str

@@ -25,6 +25,7 @@ def _settings(**overrides) -> Settings:
         adx_database="CopilotTranscripts",
         adx_raw_table="CopilotTranscriptRaw",
         adx_agent_table="CopilotAgentRaw",
+        adx_user_table="CopilotUserRaw",
         watermark_table_endpoint="https://st.table.core.windows.net",
         watermark_table_name="SyncWatermarks",
         initial_backfill_days=30,
@@ -33,6 +34,7 @@ def _settings(**overrides) -> Settings:
         max_concurrent_environments=4,
         auto_provision_app_user=True,
         sync_agents=False,
+        sync_users=False,
         read_only_role_name="",
         excluded_environment_types=frozenset(),
     )
@@ -393,6 +395,33 @@ def test_agents_are_not_collected_when_disabled(monkeypatch, wired):
 
     assert result.agents_ingested == 0
     assert "agent_sink" not in wired
+
+
+def test_each_consumer_gets_its_own_azure_credential(monkeypatch, wired):
+    """The Kusto SDK closes the credential it is given.
+
+    Regression: a shared, cached credential meant closing the first sink left
+    every later consumer with "HTTP transport has already been closed", which
+    silently disabled the user dimension.
+    """
+    issued: list[object] = []
+
+    def _credential(_settings):
+        obj = object()
+        issued.append(obj)
+        return obj
+
+    monkeypatch.setattr(sync_module, "azure_credential", _credential)
+
+    env = _environment("env1", "Prod")
+    monkeypatch.setattr(sync_module, "PowerPlatformAdminClient", lambda *_a: FakeAdmin([env]))
+    _install_reader(monkeypatch, lambda _env_id, _since: [])
+
+    sync_module.run_sync(_settings(sync_agents=True))
+
+    # Watermark store, transcript sink and agent sink must not share one object.
+    assert len(issued) >= 3
+    assert len(set(map(id, issued))) == len(issued)
 
 
 def test_agent_failure_does_not_stop_transcript_extraction(monkeypatch, wired):

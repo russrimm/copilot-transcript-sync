@@ -48,6 +48,7 @@ class Settings:
     adx_database: str
     adx_raw_table: str
     adx_agent_table: str
+    adx_user_table: str
 
     watermark_table_endpoint: str
     watermark_table_name: str
@@ -59,14 +60,14 @@ class Settings:
 
     auto_provision_app_user: bool
     sync_agents: bool
+    sync_users: bool
     read_only_role_name: str
     excluded_environment_types: frozenset[str] = field(default_factory=frozenset)
 
     @classmethod
     def from_environment(cls) -> "Settings":
-        # Empty by default. Microsoft documents that Developer and Teams
-        # environments never persist transcripts, but that is demonstrably wrong
-        # for Developer, so nothing is excluded unless you opt in.
+        # Empty by default. Skipping an environment type that does hold
+        # transcripts loses that data permanently, so exclusion is opt-in.
         excluded = {
             part.strip().casefold()
             for part in _get("EXCLUDED_ENVIRONMENT_TYPES", "").split(",")
@@ -81,6 +82,7 @@ class Settings:
             adx_database=_get("ADX_DATABASE", required=True),
             adx_raw_table=_get("ADX_RAW_TABLE", "CopilotTranscriptRaw"),
             adx_agent_table=_get("ADX_AGENT_TABLE", "CopilotAgentRaw"),
+            adx_user_table=_get("ADX_USER_TABLE", "CopilotUserRaw"),
             watermark_table_endpoint=_get("WATERMARK_TABLE_ENDPOINT", required=True).rstrip("/"),
             watermark_table_name=_get("WATERMARK_TABLE_NAME", "SyncWatermarks"),
             initial_backfill_days=_get_int("INITIAL_BACKFILL_DAYS", 30),
@@ -89,6 +91,8 @@ class Settings:
             max_concurrent_environments=_get_int("MAX_CONCURRENT_ENVIRONMENTS", 4),
             auto_provision_app_user=_get_bool("AUTO_PROVISION_APP_USER", True),
             sync_agents=_get_bool("SYNC_AGENTS", True),
+            # Off by default: this resolves personal data from Microsoft Graph.
+            sync_users=_get_bool("SYNC_USERS", False),
             read_only_role_name=_get("READ_ONLY_ROLE_NAME"),
             excluded_environment_types=frozenset(excluded),
         )

@@ -172,10 +172,9 @@ def _environment(environment_type="Production", state="Ready"):
 def test_no_environment_type_is_excluded_by_default(environment_type):
     """Every type is queried unless explicitly opted out.
 
-    Microsoft documents that Developer environments never persist transcripts.
-    That is wrong: a Developer environment was measured holding 31 transcripts,
+    Developer environments do hold transcripts: one was measured holding 31,
     more than every Production environment in the same tenant combined. Skipping
-    a type on documentation alone silently loses data.
+    a type by default would silently lose that data.
     """
     assert is_transcript_eligible(_environment(environment_type), frozenset())
 

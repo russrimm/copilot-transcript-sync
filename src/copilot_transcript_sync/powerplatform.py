@@ -176,19 +176,15 @@ def is_transcript_eligible(
 
     No environment type is excluded by default, deliberately.
 
-    Microsoft documents that transcripts "aren't stored for agents deployed in
-    developer environments", but that is not true in practice: a Developer
-    environment in the tenant this was built against held 31 transcripts, more
-    than every Production environment combined. Skipping a type on the strength
-    of that documentation silently loses data, and silent loss is the exact
-    failure this pipeline exists to prevent.
+    The costs are asymmetric: querying an environment that holds no transcripts
+    costs one request returning zero rows, while skipping one that does hold
+    transcripts loses that data permanently once the 30-day Dataverse retention
+    passes. Measured in the tenant this was built against, Developer
+    environments held more transcripts than Production environments did.
 
-    Querying an environment that genuinely has none costs a single request that
-    returns zero rows, which is far cheaper than missing transcripts. Use
-    EXCLUDED_ENVIRONMENT_TYPES to opt out of a type once you have confirmed for
-    yourself that it never holds any.
-
-    https://learn.microsoft.com/en-us/microsoft-copilot-studio/analytics-transcripts-powerapps
+    Use EXCLUDED_ENVIRONMENT_TYPES to opt out of a type once you have confirmed
+    it holds nothing in your own tenant. scripts/probe_all_environments.py
+    reports the actual counts.
     """
     environment_type = environment.environment_type.casefold()
     if environment_type in excluded_types:

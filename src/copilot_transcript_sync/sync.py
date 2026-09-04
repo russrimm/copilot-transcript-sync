@@ -8,10 +8,10 @@ from datetime import datetime, timezone
 
 import httpx
 
-from .adx import AdxSink, agent_sink, transcript_sink
+from .adx import AdxSink, agent_sink, transcript_sink, user_sink
 from .agents import DataverseAgentReader
 from .credentials import azure_credential, power_platform_credential
-from .dataverse import DataverseTranscriptReader
+from .dataverse import DataverseTranscriptReader, extract_aad_object_ids
 from .http import DEFAULT_TIMEOUT, TokenProvider
 from .powerplatform import (
     PowerPlatformAdminClient,
@@ -19,6 +19,7 @@ from .powerplatform import (
     is_transcript_eligible,
 )
 from .settings import Settings
+from .users import GraphUserResolver
 from .watermarks import WatermarkStore
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,8 @@ class SyncResult:
     environments_failed: int = 0
     rows_ingested: int = 0
     agents_ingested: int = 0
+    users_resolved: int = 0
+    users_error: str | None = None
     environments: list[EnvironmentResult] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -65,12 +68,14 @@ def run_sync(settings: Settings) -> SyncResult:
     result = SyncResult(started_at=datetime.now(timezone.utc).isoformat())
 
     pp_tokens = TokenProvider(power_platform_credential(settings))
-    az_credential = azure_credential(settings)
 
+    # Each consumer gets its own Azure credential. The Kusto SDK closes the
+    # credential it was handed when its client closes, so a shared instance
+    # would leave later consumers with a closed transport.
     watermarks = WatermarkStore(
         endpoint=settings.watermark_table_endpoint,
         table_name=settings.watermark_table_name,
-        credential=az_credential,
+        credential=azure_credential(settings),
         initial_backfill_days=settings.initial_backfill_days,
         lookback_minutes=settings.watermark_lookback_minutes,
     )
@@ -91,8 +96,13 @@ def run_sync(settings: Settings) -> SyncResult:
                 settings.adx_ingest_uri,
                 settings.adx_database,
                 settings.adx_raw_table,
-                az_credential,
-            ) as sink, _maybe_agent_sink(settings, az_credential) as agents:
+                azure_credential(settings),
+            ) as sink, _maybe_agent_sink(settings) as agents:
+                # Object IDs seen across the whole run, resolved once at the end
+                # rather than per environment, since the same person can appear
+                # in several environments.
+                seen_object_ids: set[str] = set()
+
                 for environment in eligible:
                     outcome = _sync_environment(
                         environment=environment,
@@ -103,6 +113,7 @@ def run_sync(settings: Settings) -> SyncResult:
                         sink=sink,
                         agent_sink_=agents,
                         watermarks=watermarks,
+                        seen_object_ids=seen_object_ids,
                     )
                     result.environments.append(outcome)
                     if outcome.error:
@@ -116,19 +127,56 @@ def run_sync(settings: Settings) -> SyncResult:
                 if agents is not None:
                     agents.flush()
                     result.agents_ingested = agents.rows_ingested
+
+            if settings.sync_users and seen_object_ids:
+                result.users_resolved, result.users_error = _sync_users(
+                    settings, http_client, seen_object_ids
+                )
     finally:
         watermarks.close()
 
     result.finished_at = datetime.now(timezone.utc).isoformat()
     logger.info(
-        "Sync complete: %d/%d environments synced, %d failed, %d transcripts, %d agents.",
+        "Sync complete: %d/%d environments synced, %d failed, %d transcripts, "
+        "%d agents, %d users.",
         result.environments_synced,
         result.environments_discovered,
         result.environments_failed,
         result.rows_ingested,
         result.agents_ingested,
+        result.users_resolved,
     )
     return result
+
+
+def _sync_users(
+    settings: Settings,
+    http_client: httpx.Client,
+    object_ids: set[str],
+) -> tuple[int, str | None]:
+    """Resolve Entra object IDs to org attributes and ingest them.
+
+    Returns (count, error). Failure is not fatal -- the user dimension is an
+    enrichment, and losing it must not cost transcripts already collected -- but
+    the reason is returned rather than swallowed, because a silent zero looks
+    identical to "no users found".
+    """
+    try:
+        resolver = GraphUserResolver(http_client, azure_credential(settings))
+        with user_sink(
+            settings.adx_ingest_uri,
+            settings.adx_database,
+            settings.adx_user_table,
+            azure_credential(settings),
+        ) as users:
+            for user in resolver.resolve(object_ids):
+                users.add(user)
+            users.flush()
+            return users.rows_ingested, None
+    except Exception as exc:  # noqa: BLE001 - enrichment must not break the run
+        message = f"{type(exc).__name__}: {str(exc)[:300]}"
+        logger.warning("Could not resolve Entra users: %s", message)
+        return 0, message
 
 
 class _NullSink:
@@ -152,7 +200,7 @@ class _NullSink:
         return
 
 
-def _maybe_agent_sink(settings: Settings, credential):
+def _maybe_agent_sink(settings: Settings):
     """Return an agent sink, or a no-op context yielding None when disabled."""
     if not settings.sync_agents:
         return _NullSink()
@@ -160,7 +208,7 @@ def _maybe_agent_sink(settings: Settings, credential):
         settings.adx_ingest_uri,
         settings.adx_database,
         settings.adx_agent_table,
-        credential,
+        azure_credential(settings),
     )
 
 
@@ -174,6 +222,7 @@ def _sync_environment(
     sink: AdxSink,
     agent_sink_: AdxSink | None,
     watermarks: WatermarkStore,
+    seen_object_ids: set[str],
 ) -> EnvironmentResult:
     outcome = EnvironmentResult(
         environment_id=environment.environment_id,
@@ -209,6 +258,7 @@ def _sync_environment(
         for row in reader.read_since(since):
             sink.add(row)
             rows += 1
+            seen_object_ids.update(extract_aad_object_ids(row.content))
             created_on = _parse_created_on(row.created_on)
             if created_on and (highest_created_on is None or created_on > highest_created_on):
                 highest_created_on = created_on

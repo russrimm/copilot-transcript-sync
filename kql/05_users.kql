@@ -1,0 +1,180 @@
+//
+// Entra user dimension, resolved from Microsoft Graph.
+// Run after 03_sessions.kql.
+//
+// Transcript activities carry two user identifiers:
+//   from.id           hashed before it is written, so it cannot be resolved
+//   from.aadObjectId  the real Entra object ID, on authenticated channels
+//
+// Only the second can be joined to a person. Resolving it is what makes
+// departmental and role-based segmentation possible.
+//
+// This table holds PERSONAL DATA -- names, job titles, locations. Restrict
+// access accordingly, and set SYNC_USERS=false if that is not acceptable in
+// your environment.
+//
+
+.create-merge table CopilotUserRaw (
+    AadObjectId: string,
+    DisplayName: string,
+    UserPrincipalName: string,
+    Mail: string,
+    JobTitle: string,
+    Department: string,
+    CompanyName: string,
+    OfficeLocation: string,
+    City: string,
+    Country: string,
+    UsageLocation: string,
+    EmployeeType: string,
+    AccountEnabled: bool,
+    Resolved: bool,
+    IngestedAt: datetime
+)
+
+.alter table CopilotUserRaw docstring
+    "Entra user attributes for people who appear in Copilot Studio transcripts. Contains personal data. Append-only; query CopilotUser instead."
+
+.alter table CopilotUserRaw column-docstrings (
+    AadObjectId: "Entra object ID, from the transcript activity's from.aadObjectId. Joins to CopilotSession on AadObjectId.",
+    Resolved: "False when Microsoft Graph could not resolve the object ID, usually a deleted or external user. The row is still written so sessions stay attributable.",
+    IngestedAt: "UTC time this sync run resolved the user. Used to pick the winner when deduplicating."
+)
+
+.create-or-alter table CopilotUserRaw ingestion json mapping "CopilotUserRawMapping"
+```
+[
+  {"column":"AadObjectId","Properties":{"Path":"$.AadObjectId"}},
+  {"column":"DisplayName","Properties":{"Path":"$.DisplayName"}},
+  {"column":"UserPrincipalName","Properties":{"Path":"$.UserPrincipalName"}},
+  {"column":"Mail","Properties":{"Path":"$.Mail"}},
+  {"column":"JobTitle","Properties":{"Path":"$.JobTitle"}},
+  {"column":"Department","Properties":{"Path":"$.Department"}},
+  {"column":"CompanyName","Properties":{"Path":"$.CompanyName"}},
+  {"column":"OfficeLocation","Properties":{"Path":"$.OfficeLocation"}},
+  {"column":"City","Properties":{"Path":"$.City"}},
+  {"column":"Country","Properties":{"Path":"$.Country"}},
+  {"column":"UsageLocation","Properties":{"Path":"$.UsageLocation"}},
+  {"column":"EmployeeType","Properties":{"Path":"$.EmployeeType"}},
+  {"column":"AccountEnabled","Properties":{"Path":"$.AccountEnabled"}},
+  {"column":"Resolved","Properties":{"Path":"$.Resolved"}},
+  {"column":"IngestedAt","Properties":{"Path":"$.IngestedAt"}}
+]
+```
+
+// Personal data, and re-resolved on every run, so keep far less of it than the
+// transcript archive.
+.alter-merge table CopilotUserRaw policy retention softdelete = 90d recoverability = enabled
+
+.alter table CopilotUserRaw policy caching hot = 30d
+
+//
+// Current attributes for each user.
+//
+.create-or-alter function
+with (
+    docstring = "Current Entra attributes for every user seen in transcripts, one row per object ID.",
+    folder = "CopilotStudio"
+)
+CopilotUser() {
+    CopilotUserRaw
+    | summarize arg_max(IngestedAt, *) by AadObjectId
+}
+
+//
+// Sessions enriched with the person who had them.
+//
+// Left join, so sessions from unauthenticated channels -- where no object ID is
+// written at all -- are kept rather than silently dropped. Those appear with an
+// empty Department, which is materially different from "Department unknown for
+// a known person", so the two are distinguished below.
+//
+.create-or-alter function
+with (
+    docstring = "Sessions joined to Entra user attributes, for departmental and role-based segmentation.",
+    folder = "CopilotStudio"
+)
+CopilotSessionByUser(lookback: timespan = 30d, includeDesignMode: bool = false) {
+    CopilotSession()
+    | where SessionStart > ago(lookback)
+    | where includeDesignMode or not(coalesce(IsDesignMode, false))
+    | join kind=leftouter (
+        CopilotUser()
+        | project AadObjectId, DisplayName, UserPrincipalName, JobTitle, Department,
+                  CompanyName, OfficeLocation, City, Country, EmployeeType, Resolved
+      ) on AadObjectId
+    | extend
+        Attribution = case(
+            isempty(AadObjectId), "Unauthenticated",
+            Resolved == true, "Resolved",
+            isnotempty(AadObjectId), "Unresolved",
+            "Unknown"),
+        Department = iff(isempty(Department), "(unknown)", Department),
+        JobTitle = iff(isempty(JobTitle), "(unknown)", JobTitle)
+    | project-away AadObjectId1
+}
+
+//
+// Adoption by department.
+//
+.create-or-alter function
+with (
+    docstring = "Copilot Studio adoption per department: users, sessions, and outcome mix.",
+    folder = "CopilotStudio"
+)
+CopilotAdoptionByDepartment(lookback: timespan = 30d) {
+    CopilotSessionByUser(lookback, false)
+    | where Attribution == "Resolved"
+    | summarize
+        Users = dcount(AadObjectId),
+        Sessions = count(),
+        Agents = dcount(BotId),
+        Engaged = countif(IsEngaged),
+        Resolved = countif(IsResolved),
+        Escalated = countif(IsEscalated),
+        AvgTurns = round(avg(todouble(TurnCount)), 2),
+        SessionsPerUser = round(todouble(count()) / dcount(AadObjectId), 2)
+        by Department
+    | order by Sessions desc
+}
+
+//
+// Adoption by job title, for role-based enablement targeting.
+//
+.create-or-alter function
+with (
+    docstring = "Copilot Studio adoption per job title, for role-based enablement targeting.",
+    folder = "CopilotStudio"
+)
+CopilotAdoptionByJobTitle(lookback: timespan = 30d, minSessions: int = 1) {
+    CopilotSessionByUser(lookback, false)
+    | where Attribution == "Resolved"
+    | summarize
+        Users = dcount(AadObjectId),
+        Sessions = count(),
+        Agents = dcount(BotId),
+        Engaged = countif(IsEngaged)
+        by JobTitle, Department
+    | where Sessions >= minSessions
+    | order by Sessions desc
+}
+
+//
+// How much traffic can actually be attributed to a person.
+//
+// Worth checking before trusting any departmental breakdown: unauthenticated
+// channels write no object ID at all, so a low resolution rate means the
+// segmentation covers only part of the picture.
+//
+.create-or-alter function
+with (
+    docstring = "Share of sessions attributable to a resolved Entra user, versus unauthenticated or unresolved.",
+    folder = "CopilotStudio"
+)
+CopilotAttributionCoverage(lookback: timespan = 30d) {
+    CopilotSessionByUser(lookback, true)
+    | summarize Sessions = count() by Attribution, IsDesignMode
+    | extend Share = round(todouble(Sessions) / toscalar(
+        CopilotSessionByUser(lookback, true) | count | project Count), 4)
+    | order by Sessions desc
+}

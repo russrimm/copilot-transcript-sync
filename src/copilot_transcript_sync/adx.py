@@ -17,12 +17,14 @@ from typing import Iterable, Protocol
 from azure.core.credentials import TokenCredential
 from azure.kusto.data import KustoConnectionStringBuilder
 from azure.kusto.data.data_format import DataFormat
+from azure.kusto.data.exceptions import KustoNetworkError
 from azure.kusto.ingest import IngestionProperties, QueuedIngestClient, ReportLevel
 
 logger = logging.getLogger(__name__)
 
 TRANSCRIPT_MAPPING = "CopilotTranscriptRawMapping"
 AGENT_MAPPING = "CopilotAgentRawMapping"
+USER_MAPPING = "CopilotUserRawMapping"
 
 # Keep each ingestion blob comfortably under the 1 GB uncompressed guidance while
 # staying large enough to avoid a blob per row. A single transcript's content
@@ -62,6 +64,7 @@ class AdxSink:
             report_level=ReportLevel.FailuresOnly,
         )
         self._table = table
+        self._ingest_uri = ingest_uri
         self._batch_rows = batch_rows
         self._buffer: list[str] = []
         self._buffer_bytes = 0
@@ -87,7 +90,23 @@ class AdxSink:
         stream = io.BytesIO(payload.encode("utf-8"))
         count = len(self._buffer)
 
-        self._client.ingest_from_stream(stream, ingestion_properties=self._properties)
+        try:
+            self._client.ingest_from_stream(stream, ingestion_properties=self._properties)
+        except KustoNetworkError as exc:
+            # A stopped Azure Data Explorer cluster surfaces here as a bare
+            # network failure against the auth metadata endpoint, naming nothing
+            # about the cluster state. Say so, because the raw error sends you
+            # looking at networking instead.
+            raise RuntimeError(
+                f"Could not reach Azure Data Explorer at {self._ingest_uri}. "
+                "The usual cause is that the cluster is stopped: a stopped cluster "
+                "does not restart itself, and every request fails as a network error. "
+                "Check the cluster state and start it if needed:\n"
+                "  az resource show -g <rg> -n <cluster> "
+                "--resource-type Microsoft.Kusto/clusters "
+                "--api-version 2024-04-13 --query properties.state\n"
+                f"Underlying error: {exc}"
+            ) from exc
 
         self.rows_ingested += count
         logger.info(
@@ -121,6 +140,12 @@ def agent_sink(
 ) -> AdxSink:
     # Agent rows are small, so a larger batch keeps extent counts sensible.
     return AdxSink(ingest_uri, database, table, AGENT_MAPPING, credential, batch_rows=500)
+
+
+def user_sink(
+    ingest_uri: str, database: str, table: str, credential: TokenCredential
+) -> AdxSink:
+    return AdxSink(ingest_uri, database, table, USER_MAPPING, credential, batch_rows=500)
 
 
 # Backwards-compatible alias for the original transcript-only sink.
