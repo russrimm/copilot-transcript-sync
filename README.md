@@ -864,6 +864,34 @@ Open the generated `.pbit` and supply four parameters:
 | `LookbackDays` | `90` | Window loaded into the model |
 | `IncludeTestPane` | `false` | Whether design-mode sessions are included |
 
+### The first load needs a second click
+
+After you click **Load**, Power BI opens an **Azure Data Explorer (Kusto)**
+sign-in dialog, because the cluster is a data source it has not seen before.
+Until you click **Connect** there, nothing is sent to the cluster.
+
+The **Refresh** progress dialog often opens on top of that sign-in dialog and
+covers its buttons. What you see is a Refresh box listing every query as
+*"Waiting for other queries…"*, apparently spinning forever. It is not slow —
+it is blocked behind a prompt you cannot see.
+
+Drag the Refresh dialog aside, click **Connect** on the Azure Data Explorer
+dialog underneath, and the load proceeds.
+
+You can confirm which situation you are in from the cluster rather than
+guessing, because a blocked load sends nothing at all:
+
+```kusto
+.show queries
+| where StartedOn > ago(30m) and Application == "PowerBIConnector"
+| project StartedOn, State, substring(Text, 0, 40)
+| order by StartedOn desc
+```
+
+No rows means Power BI never reached the cluster and is waiting on the sign-in
+prompt. Rows with `State == "Completed"` mean the data arrived and any
+remaining problem is on the report side.
+
 The model is a star schema: a `Sessions` fact against `Agents`, `Users`,
 `Environments` and `Dates` dimensions, with 26 measures and four report pages —
 Overview, Agents, Adoption and Governance. Every query behind it is one of the
@@ -1103,6 +1131,7 @@ These talk to the real tenant and cluster, and are not part of `pytest`:
 | User dimension stays empty with `SYNC_USERS=true` | `User.Read.All` not granted to the managed identity | Run `scripts/grant_graph_permission.ps1`. `az ad app permission` does not work for managed identities |
 | Power BI reports the `.pbit` is corrupted | A hand-written package part is malformed | Rebuild with `python powerbi/build_template.py`; it re-parses its own output. See [About the `.pbit` format](#about-the-pbit-format) |
 | Template prompts for parameters, then returns to the Power BI start screen with no error | The `Version` part is older than the installed Power BI Desktop, so the values land in `UnappliedChanges` instead of being applied | Check `TempSaves\Backups` for an `_UpgradeFrom<version>.pbix`, then set `Version` to match. See [About the `.pbit` format](#about-the-pbit-format) |
+| Refresh dialog lists every query as "Waiting for other queries…" and never finishes | The Azure Data Explorer sign-in dialog is open behind it, so nothing has been sent to the cluster | Move the Refresh dialog and click **Connect**. See [The first load needs a second click](#the-first-load-needs-a-second-click) |
 | Power BI closes itself part way through loading the template | Two Power BI Desktop builds are installed and the double-click is opening the older one | Check `Get-AppxPackage -Name "*PowerBIDesktop*"` against `C:\Program Files\Microsoft Power BI Desktop`. Open the template from the build you intend, rather than by double-click. See [Two Power BI Desktop installs](#two-power-bi-desktop-installs) |
 
 ---
@@ -1237,12 +1266,25 @@ only once you supply your own cluster.
 Power BI Desktop crashed several times while this template was being developed, on both
 installed builds, with a stack overflow (`0xc00000fd`). Two real defects were found and fixed
 in that window — the stale `Version` part, and a bidirectional relationship that should always
-have been single-direction. Loads after those fixes have completed, and the cluster query log
-confirms the data being pulled. The crash was never reproduced deterministically, so neither
-fix is claimed as its confirmed cause. If it recurs, start with
-[Two Power BI Desktop installs](#two-power-bi-desktop-installs) and check
-`Get-WinEvent -LogName Application -FilterXPath "*[System[EventID=1000]]"` for which build
-faulted.
+have been single-direction. Neither is claimed as the cause.
+
+What was established, by testing rather than reasoning:
+
+| Test | Result |
+|---|---|
+| Power BI idle with no document, 705 s | No crash |
+| Template with data loaded and **no visuals**, 720 s | No crash |
+| Template with all 39 visuals, data loaded | Loads; longest clean observation 780 s |
+
+An earlier round of testing appeared to show the opposite — crashes with and without visuals —
+but that harness sent a keystroke every 12 seconds for the whole run to clear dialogs, which
+the idle control never received. Removing that confound removed the crashes. Those results
+were discarded rather than reported.
+
+The cluster's `.show queries` log is the reliable signal here, not the Power BI window: it
+shows whether the connector ever reached the cluster. Two separate "it loaded" conclusions
+earlier in development were false positives from checking stale Analysis Services workspaces
+instead.
 
 ---
 
