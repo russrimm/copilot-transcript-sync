@@ -873,6 +873,33 @@ Refresh signs in as you, so you need **Viewer** on the database. The template
 loads with import storage mode; on a Dev-tier cluster keep `LookbackDays`
 modest.
 
+### Two Power BI Desktop installs
+
+Power BI Desktop ships both as a Microsoft Store app and as a downloadable
+installer, and the two can be present at once at different versions. They are
+separate programs with separate update channels — upgrading one does not touch
+the other.
+
+This matters because the Store build owns the `.pbit` file association, so a
+double-click opens the Store build even when the newer installer build is the
+one you have been using. Check which builds you have:
+
+```powershell
+Get-AppxPackage -Name "*PowerBIDesktop*" | Select-Object Name, Version
+(Get-Item "C:\Program Files\Microsoft Power BI Desktop\bin\PBIDesktop.exe").VersionInfo.ProductVersion
+```
+
+To open the template with a specific build rather than whichever one owns the
+association:
+
+```powershell
+& "C:\Program Files\Microsoft Power BI Desktop\bin\PBIDesktop.exe" `
+    "powerbi\CopilotStudioAnalytics.pbit"
+```
+
+If the template loads under one build and not the other, this is the first
+thing to rule out.
+
 ### About the `.pbit` format
 
 The generator writes the package by hand because no supported Microsoft library
@@ -1076,6 +1103,7 @@ These talk to the real tenant and cluster, and are not part of `pytest`:
 | User dimension stays empty with `SYNC_USERS=true` | `User.Read.All` not granted to the managed identity | Run `scripts/grant_graph_permission.ps1`. `az ad app permission` does not work for managed identities |
 | Power BI reports the `.pbit` is corrupted | A hand-written package part is malformed | Rebuild with `python powerbi/build_template.py`; it re-parses its own output. See [About the `.pbit` format](#about-the-pbit-format) |
 | Template prompts for parameters, then returns to the Power BI start screen with no error | The `Version` part is older than the installed Power BI Desktop, so the values land in `UnappliedChanges` instead of being applied | Check `TempSaves\Backups` for an `_UpgradeFrom<version>.pbix`, then set `Version` to match. See [About the `.pbit` format](#about-the-pbit-format) |
+| Power BI closes itself part way through loading the template | Two Power BI Desktop builds are installed and the double-click is opening the older one | Check `Get-AppxPackage -Name "*PowerBIDesktop*"` against `C:\Program Files\Microsoft Power BI Desktop`. Open the template from the build you intend, rather than by double-click. See [Two Power BI Desktop installs](#two-power-bi-desktop-installs) |
 
 ---
 
@@ -1189,7 +1217,7 @@ Behavior confirmed by the same run:
 | Entra user dimension | Resolved end to end through Microsoft Graph after granting `User.Read.All` to the managed identity |
 | Session facts | 33 sessions built from raw activities; `CopilotDesignModeSplit()` correctly separated 28 test-pane from 5 real sessions |
 | Power BI template | Opened in Power BI Desktop 2.157.1354.0. Model verified against the local Analysis Services engine: 5 tables, 26 measures, 4 relationships, 4 parameters. Report layout verified intact: 4 pages, 39 visuals |
-| Template Kusto queries | All four run against the live cluster with the expected shape: Sessions 5 rows, Agents 120, Users 1, Environments 12 |
+| Template Kusto queries | All four run against the live cluster with the expected shape: Sessions 5 rows, Agents 120, Users 1, Environments 12. The cluster's own `.show queries` log confirms Power BI reaching it as `PowerBIConnector` and every query completing |
 | Teardown | Resource group, application users, management app registration, and app registration all removed and verified |
 | Unit tests | 64 passing, no Azure required |
 
@@ -1205,6 +1233,16 @@ but sparse at that volume, and `CopilotAttributionCoverage()` is worth running b
 anything into the Adoption page. A refresh against a live cluster was **not** part of that
 check: the template ships with placeholder parameter defaults, so the first refresh happens
 only once you supply your own cluster.
+
+Power BI Desktop crashed several times while this template was being developed, on both
+installed builds, with a stack overflow (`0xc00000fd`). Two real defects were found and fixed
+in that window — the stale `Version` part, and a bidirectional relationship that should always
+have been single-direction. Loads after those fixes have completed, and the cluster query log
+confirms the data being pulled. The crash was never reproduced deterministically, so neither
+fix is claimed as its confirmed cause. If it recurs, start with
+[Two Power BI Desktop installs](#two-power-bi-desktop-installs) and check
+`Get-WinEvent -LogName Application -FilterXPath "*[System[EventID=1000]]"` for which build
+faulted.
 
 ---
 

@@ -297,7 +297,11 @@ def build_model() -> dict:
             "fromColumn": "DataverseBotId",
             "toTable": "Agents",
             "toColumn": "BotId",
-            "crossFilteringBehavior": "bothDirections",
+            # Single-direction on purpose. Filters only need to flow from the
+            # Agents dimension down to the Sessions fact. A bidirectional edge
+            # here would also let a Sessions filter narrow Agents, which is
+            # wrong for [Unused Agents] -- an agent with no sessions must stay
+            # visible precisely because nothing in Sessions references it.
         },
         {
             "name": "Sessions_Dates",
