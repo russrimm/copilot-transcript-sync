@@ -188,7 +188,7 @@ sequenceDiagram
     E-->>F: App-only access token
     F->>B: GET scopes/admin/environments
     B-->>F: Every environment in the tenant
-    Note over F: Discard Developer, Teams,<br/>and any without a Dataverse database
+    Note over F: Discard environments without a Dataverse<br/>database, and any excluded by configuration
 
     loop For each eligible environment
         F->>B: POST addAppUser (idempotent)
@@ -267,6 +267,43 @@ overlap window on each run, and deduplicates in Azure Data Explorer. The same tr
 the Azure Synapse Link route Microsoft otherwise recommends — it mirrors deletes unless you
 explicitly choose append-only mode.
 
+### Microsoft's documentation about Developer environments is wrong
+
+Microsoft Learn states that transcripts ["aren't stored for agents deployed in developer
+environments"][transcripts-doc]. **That is not true**, and building on it silently loses data.
+
+Measured in a real tenant, over a 90-day window:
+
+| Environment type | Transcripts |
+|---|---|
+| **Developer** | **31** |
+| Production | 10 |
+| Sandbox, Default | 0 |
+
+A single Developer environment held more transcripts than every Production environment
+combined. An early version of this project trusted the documentation, skipped Developer
+environments, and quietly missed three quarters of the tenant's transcripts while reporting
+success.
+
+So **no environment type is excluded by default.** Querying an environment that genuinely
+holds none costs one request returning zero rows; wrongly skipping one loses data
+permanently once Dataverse's 30-day retention passes. Use `EXCLUDED_ENVIRONMENT_TYPES` to opt
+out of a type only after confirming for yourself that it never holds any.
+
+Run the probe against your own tenant before deciding:
+
+```powershell
+python scripts/probe_all_environments.py --days 90
+```
+
+It reports the actual transcript count per environment, including types this pipeline would
+otherwise skip, and authenticates as you rather than depending on application users.
+
+> The same documentation also claims Dataverse for Teams environments and Microsoft 365
+> Copilot agents never persist transcripts. This tenant had none of either, so those claims
+> are untested here. Given the Developer claim proved false, treat them as unverified rather
+> than authoritative.
+
 ### Transcripts over 1 MB are split across rows
 
 `content` is capped at 1,048,576 characters. Larger conversations become multiple Dataverse
@@ -302,10 +339,11 @@ conversation rather than a parsing bug. `CopilotTranscriptTurn()` accepts all th
 
 ### Tenant and environment
 
-1. **Environment types.** Transcripts are never written to Dataverse for **Developer**
-   environments, **Dataverse for Teams** environments, or **Microsoft 365 Copilot agents**.
-   The job skips Developer and Teams automatically. Agents must live in Sandbox or Production
-   environments with a Dataverse database.
+1. **Environment types.** No type is skipped by default. Microsoft documents that Developer
+   and Dataverse for Teams environments never persist transcripts, but that is
+   [demonstrably wrong for Developer](#microsofts-documentation-about-developer-environments-is-wrong)
+   — measure your own tenant with `scripts/probe_all_environments.py` before excluding
+   anything. An environment does need a Dataverse database, which the discovery step checks.
 
 2. **Transcript saving must be on**, per environment: Power Platform admin center →
    **Manage → Environments → [env] → Settings → Product → Features → Copilot Studio agents** →
@@ -782,7 +820,7 @@ CopilotTranscriptTurn()
 | `WATERMARK_LOOKBACK_MINUTES` | `120` | Overlap replayed before the stored watermark. Duplicates are removed by the view |
 | `DATAVERSE_PAGE_SIZE` | `25` | `odata.maxpagesize`. Each row can carry 1 MB, so large pages mean very large responses |
 | `AUTO_PROVISION_APP_USER` | `true` | Whether to call `addAppUser` for newly discovered environments |
-| `EXCLUDED_ENVIRONMENT_TYPES` | `Developer,Teams` | Additional SKUs to skip. Developer and Teams are always skipped regardless |
+| `EXCLUDED_ENVIRONMENT_TYPES` | *(empty)* | Environment SKUs to skip, comma separated. Empty by default: Microsoft's claim that Developer environments hold no transcripts is wrong, and skipping a type silently loses data |
 | `PP_TENANT_ID` | — | Tenant hosting the Power Platform environments |
 | `PP_APP_CLIENT_ID` | — | App registration from step 1 |
 | `UAMI_CLIENT_ID` | — | Managed identity client ID. Leave blank locally to fall back to `az login` |
@@ -912,7 +950,7 @@ These talk to the real tenant and cluster, and are not part of `pytest`:
 | BAP listing returns **403** | App not registered as a Power Platform management application | Re-run step 3 |
 | Token exchange fails at runtime | Federated credential subject is the managed identity's *client* ID instead of its *object* ID | Recreate the credential; Entra accepts the wrong value silently |
 | One environment returns **401/403** | Application user missing or lacking Read on `conversationtranscript` | Check `AUTO_PROVISION_APP_USER`, or provision manually |
-| An environment reports 0 transcripts | Transcript saving disabled, no agent traffic, or Developer/Teams type | Check the environment setting in the admin center |
+| An environment reports 0 transcripts | Transcript saving disabled, no agent traffic, or the type is in `EXCLUDED_ENVIRONMENT_TYPES` | Check the environment setting in the admin center, and run `scripts/probe_all_environments.py` |
 | Publish fails at `StorageAccessibleCheck` | Remote build cannot use a private storage account | Use the local-build path in step 5 |
 | Publish succeeds but **no functions listed** | `--no-build` shipped without dependencies | Populate `.python_packages` first |
 | Deployment fails on a `PrincipalAssignment` | `adxAdminPrincipalId` duplicates the Admin that ADX grants the deployer | Omit the parameter |
@@ -1017,8 +1055,9 @@ Behavior confirmed by the same run:
 
 | Area | Result |
 |---|---|
-| Tenant-wide app-only environment discovery | 12 environments with Dataverse, 7 eligible |
-| Developer / Teams filtering | Correctly skipped, and no application user was provisioned in them |
+| Tenant-wide app-only environment discovery | 12 environments with Dataverse |
+| Environment-type filtering | Configuration-driven; nothing excluded by default after Developer environments were measured holding transcripts |
+| Developer environments | 31 transcripts recovered from one, more than all Production environments combined |
 | Workload identity federation at runtime | Function reached Power Platform with no secret |
 | Application user auto-provisioning from scratch | Created in all 7 eligible environments for a brand-new client ID |
 | ADX ingestion and JSON mapping | All rows landed, zero parse errors |

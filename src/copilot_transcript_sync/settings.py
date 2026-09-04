@@ -62,9 +62,12 @@ class Settings:
 
     @classmethod
     def from_environment(cls) -> "Settings":
+        # Empty by default. Microsoft documents that Developer and Teams
+        # environments never persist transcripts, but that is demonstrably wrong
+        # for Developer, so nothing is excluded unless you opt in.
         excluded = {
             part.strip().casefold()
-            for part in _get("EXCLUDED_ENVIRONMENT_TYPES", "Developer,Teams").split(",")
+            for part in _get("EXCLUDED_ENVIRONMENT_TYPES", "").split(",")
             if part.strip()
         }
         return cls(

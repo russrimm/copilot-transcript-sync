@@ -24,7 +24,9 @@
     "DATAVERSE_PAGE_SIZE": "25",
     "MAX_CONCURRENT_ENVIRONMENTS": "4",
     "AUTO_PROVISION_APP_USER": "true",
-    "EXCLUDED_ENVIRONMENT_TYPES": "Developer,Teams",
+
+    "// EXCLUDED_ENVIRONMENT_TYPES": "Empty by default. Developer environments DO hold transcripts despite the docs, so measure with scripts/probe_all_environments.py before excluding a type.",
+    "EXCLUDED_ENVIRONMENT_TYPES": "",
     "READ_ONLY_ROLE_NAME": ""
   }
 }

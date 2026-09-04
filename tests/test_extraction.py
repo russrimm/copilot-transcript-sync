@@ -166,20 +166,30 @@ def _environment(environment_type="Production", state="Ready"):
     )
 
 
-@pytest.mark.parametrize("environment_type", ["Production", "Sandbox", "Trial"])
-def test_transcript_eligible_types_are_kept(environment_type):
+@pytest.mark.parametrize(
+    "environment_type", ["Production", "Sandbox", "Trial", "Developer", "Teams", "Default"]
+)
+def test_no_environment_type_is_excluded_by_default(environment_type):
+    """Every type is queried unless explicitly opted out.
+
+    Microsoft documents that Developer environments never persist transcripts.
+    That is wrong: a Developer environment was measured holding 31 transcripts,
+    more than every Production environment in the same tenant combined. Skipping
+    a type on documentation alone silently loses data.
+    """
     assert is_transcript_eligible(_environment(environment_type), frozenset())
 
 
 @pytest.mark.parametrize("environment_type", ["Developer", "developer", "Teams", "TEAMS"])
-def test_developer_and_teams_are_excluded_regardless_of_settings(environment_type):
-    """These types never persist transcripts, so they are always skipped."""
-    assert not is_transcript_eligible(_environment(environment_type), frozenset())
+def test_types_can_be_excluded_by_configuration(environment_type):
+    excluded = frozenset({"developer", "teams"})
+    assert not is_transcript_eligible(_environment(environment_type), excluded)
 
 
 def test_configured_exclusions_are_honored():
     excluded = frozenset({"trial"})
     assert not is_transcript_eligible(_environment("Trial"), excluded)
+    assert is_transcript_eligible(_environment("Production"), excluded)
 
 
 def test_non_ready_instances_are_skipped():

@@ -30,7 +30,7 @@ from copilot_transcript_sync.powerplatform import (  # noqa: E402
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
-EXCLUDED = frozenset({"developer", "teams"})
+EXCLUDED = frozenset()  # nothing excluded: Developer environments do hold transcripts
 
 
 def main() -> int:

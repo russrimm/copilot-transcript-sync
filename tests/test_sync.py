@@ -32,7 +32,7 @@ def _settings(**overrides) -> Settings:
         max_concurrent_environments=4,
         auto_provision_app_user=True,
         read_only_role_name="",
-        excluded_environment_types=frozenset({"developer", "teams"}),
+        excluded_environment_types=frozenset(),
     )
     defaults.update(overrides)
     return Settings(**defaults)
@@ -220,7 +220,8 @@ def test_watermark_not_advanced_when_no_rows(monkeypatch, wired):
     assert result.environments_synced == 0
 
 
-def test_ineligible_environments_are_never_queried(monkeypatch, wired):
+def test_excluded_environments_are_never_queried(monkeypatch, wired):
+    """Exclusions come from configuration only, and are honored when set."""
     environments = [
         _environment("env1", "Prod"),
         _environment("dev1", "Dev", "Developer"),
@@ -237,11 +238,44 @@ def test_ineligible_environments_are_never_queried(monkeypatch, wired):
 
     _install_reader(monkeypatch, behavior)
 
-    result = sync_module.run_sync(_settings())
+    result = sync_module.run_sync(
+        _settings(excluded_environment_types=frozenset({"developer", "teams"}))
+    )
 
     assert queried == ["env1"]
     assert admin.provisioned == ["env1"]
     assert result.environments_discovered == 3
+
+
+def test_developer_environments_are_queried_by_default(monkeypatch, wired):
+    """Regression: Developer environments hold transcripts despite the docs.
+
+    A Developer environment was measured holding more transcripts than every
+    Production environment in the same tenant combined, so nothing is excluded
+    unless the operator opts in.
+    """
+    environments = [
+        _environment("env1", "Prod"),
+        _environment("dev1", "Dev", "Developer"),
+        _environment("teams1", "Teams", "Teams"),
+    ]
+    admin = FakeAdmin(environments)
+    monkeypatch.setattr(sync_module, "PowerPlatformAdminClient", lambda *_a: admin)
+
+    queried: list[str] = []
+
+    def behavior(env_id, _since):
+        queried.append(env_id)
+        env = next(e for e in environments if e.environment_id == env_id)
+        return [_row(env, 0, NOW)]
+
+    _install_reader(monkeypatch, behavior)
+
+    result = sync_module.run_sync(_settings())
+
+    assert sorted(queried) == ["dev1", "env1", "teams1"]
+    assert sorted(admin.provisioned) == ["dev1", "env1", "teams1"]
+    assert result.rows_ingested == 3
 
 
 def test_one_failing_environment_does_not_abort_the_run(monkeypatch, wired):

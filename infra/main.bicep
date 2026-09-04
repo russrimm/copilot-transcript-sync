@@ -72,6 +72,9 @@ param initialBackfillDays int = 30
 @description('Minutes of overlap replayed before the stored watermark on each run.')
 param watermarkLookbackMinutes int = 120
 
+@description('Environment SKUs to skip, comma separated. Empty by default: Microsoft documents that Developer environments never persist transcripts, but they demonstrably do, so excluding a type silently loses data. Measure with scripts/probe_all_environments.py before setting this.')
+param excludedEnvironmentTypes string = ''
+
 @description('Whether the Function should auto-provision the Dataverse application user in newly discovered environments.')
 param autoProvisionAppUser bool = true
 
@@ -553,7 +556,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         }
         {
           name: 'EXCLUDED_ENVIRONMENT_TYPES'
-          value: 'Developer,Teams'
+          // Empty on purpose. Microsoft documents that Developer environments
+          // never persist transcripts, but they demonstrably do, and excluding a
+          // type silently loses data. Opt out only after measuring your tenant.
+          value: excludedEnvironmentTypes
         }
       ]
     }

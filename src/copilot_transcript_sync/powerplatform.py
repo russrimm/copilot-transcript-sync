@@ -31,11 +31,6 @@ logger = logging.getLogger(__name__)
 BAP_BASE = "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform"
 BAP_API_VERSION = "2020-10-01"
 
-# Transcripts are never written to Dataverse for these environment types.
-# https://learn.microsoft.com/en-us/microsoft-copilot-studio/admin-transcript-controls
-# https://learn.microsoft.com/en-us/microsoft-copilot-studio/analytics-transcripts-powerapps
-TRANSCRIPT_INELIGIBLE_TYPES = frozenset({"developer", "teams"})
-
 
 @dataclass(frozen=True)
 class PowerPlatformEnvironment:
@@ -177,15 +172,28 @@ class PowerPlatformAdminClient:
 def is_transcript_eligible(
     environment: PowerPlatformEnvironment, excluded_types: frozenset[str]
 ) -> bool:
-    """Whether an environment can hold Copilot Studio transcripts in Dataverse.
+    """Whether an environment should be queried for transcripts.
 
-    Developer and Dataverse-for-Teams environments never persist transcripts, so
-    querying them wastes request quota against the service protection limits.
+    No environment type is excluded by default, deliberately.
+
+    Microsoft documents that transcripts "aren't stored for agents deployed in
+    developer environments", but that is not true in practice: a Developer
+    environment in the tenant this was built against held 31 transcripts, more
+    than every Production environment combined. Skipping a type on the strength
+    of that documentation silently loses data, and silent loss is the exact
+    failure this pipeline exists to prevent.
+
+    Querying an environment that genuinely has none costs a single request that
+    returns zero rows, which is far cheaper than missing transcripts. Use
+    EXCLUDED_ENVIRONMENT_TYPES to opt out of a type once you have confirmed for
+    yourself that it never holds any.
+
+    https://learn.microsoft.com/en-us/microsoft-copilot-studio/analytics-transcripts-powerapps
     """
     environment_type = environment.environment_type.casefold()
-    if environment_type in excluded_types or environment_type in TRANSCRIPT_INELIGIBLE_TYPES:
+    if environment_type in excluded_types:
         logger.info(
-            "Skipping environment '%s' (%s): type does not persist transcripts.",
+            "Skipping environment '%s' (%s): type is in EXCLUDED_ENVIRONMENT_TYPES.",
             environment.display_name,
             environment.environment_type or "unknown",
         )
