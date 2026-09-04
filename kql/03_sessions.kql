@@ -1,0 +1,172 @@
+//
+// Copilot Studio transcript archive -- session and conversation facts.
+// Run after 02_views.kql.
+//
+// Everything here is derived from trace activities inside the transcript
+// payload. Microsoft documents the activity value types but not their fields,
+// so the shapes below were read off real transcripts:
+//
+//   SessionInfo      {"type":"Unengaged","startTimeUtc":"...","endTimeUtc":"...",
+//                     "outcome":"None","turnCount":1,"impliedSuccess":false,
+//                     "outcomeReason":"NoError"}
+//   ConversationInfo {"lastSessionOutcome":"None","lastSessionOutcomeReason":"NoError",
+//                     "isDesignMode":false,"locale":""}
+//
+// These carry the metrics Copilot Studio's own analytics report -- engagement,
+// resolution, escalation, abandonment -- and none of them are available from
+// Purview audit logs.
+//
+
+//
+// 1. Session facts.
+//
+// One row per session. A conversation can contain several sessions, and a
+// transcript over 1 MB is split across rows sharing Name and
+// ConversationStartTime, so sessions are keyed on the transcript plus the
+// activity's position rather than on the conversation alone.
+//
+// isDesignMode marks traffic from the Copilot Studio test pane. That is a maker
+// testing their own agent, not a real user, and leaving it in inflates every
+// adoption number. It is surfaced rather than filtered so the choice stays with
+// the query.
+//
+.create-or-alter function
+with (
+    docstring = "One row per Copilot Studio session, with engagement type, outcome, turn count and duration. Filter IsDesignMode == false for real user traffic.",
+    folder = "CopilotStudio"
+)
+CopilotSession() {
+    let sessions =
+        CopilotTranscriptTurn()
+        | where ValueType == "SessionInfo"
+        | extend V = ActivityValue
+        | project
+            EnvironmentId, EnvironmentName, ConversationTranscriptId, ConversationId,
+            BotId, DataverseBotId, BotName, BatchId, ConversationStartTime, CreatedOn, ActivityIndex,
+            SessionType = tostring(V["type"]),
+            Outcome = tostring(V["outcome"]),
+            OutcomeReason = tostring(V["outcomeReason"]),
+            TurnCount = toint(V["turnCount"]),
+            ImpliedSuccess = tobool(V["impliedSuccess"]),
+            SessionStart = todatetime(V["startTimeUtc"]),
+            SessionEnd = todatetime(V["endTimeUtc"]);
+    let conversations =
+        CopilotTranscriptTurn()
+        | where ValueType == "ConversationInfo"
+        | summarize arg_min(ActivityIndex, *) by ConversationTranscriptId
+        | project
+            ConversationTranscriptId,
+            IsDesignMode = tobool(ActivityValue["isDesignMode"]),
+            Locale = tostring(ActivityValue["locale"]),
+            LastSessionOutcome = tostring(ActivityValue["lastSessionOutcome"]);
+    let users =
+        CopilotTranscriptTurn()
+        | where isnotempty(tostring(Activity["from"]["aadObjectId"]))
+        | summarize arg_min(ActivityIndex, *) by ConversationTranscriptId
+        | project
+            ConversationTranscriptId,
+            AadObjectId = tostring(Activity["from"]["aadObjectId"]),
+            ChannelId;
+    sessions
+    | join kind=leftouter conversations on ConversationTranscriptId
+    | join kind=leftouter users on ConversationTranscriptId
+    | extend
+        SessionDuration = SessionEnd - SessionStart,
+        IsEngaged = SessionType == "Engaged",
+        // Copilot Studio's own analytics treat these outcomes as terminal.
+        IsResolved = Outcome == "Resolved",
+        IsEscalated = Outcome == "Escalated",
+        IsAbandoned = Outcome == "Abandon"
+    | project
+        EnvironmentId, EnvironmentName, ConversationId, ConversationTranscriptId,
+        BotId, DataverseBotId, BotName, ConversationStartTime, CreatedOn,
+        SessionStart, SessionEnd, SessionDuration,
+        SessionType, IsEngaged, Outcome, OutcomeReason,
+        IsResolved, IsEscalated, IsAbandoned, ImpliedSuccess,
+        TurnCount, IsDesignMode, Locale, LastSessionOutcome,
+        AadObjectId, ChannelId
+}
+
+//
+// 2. Agent rollup.
+//
+// Test-pane traffic is excluded by default: an agent whose only "usage" is its
+// maker testing it has not been adopted, and counting it misleads.
+//
+.create-or-alter function
+with (
+    docstring = "Per-agent session KPIs over a lookback window. Excludes Copilot Studio test pane traffic unless includeDesignMode is true.",
+    folder = "CopilotStudio"
+)
+CopilotAgentKpi(lookback: timespan = 30d, includeDesignMode: bool = false) {
+    CopilotSession()
+    | where SessionStart > ago(lookback)
+    | where includeDesignMode or not(coalesce(IsDesignMode, false))
+    | summarize
+        Sessions = count(),
+        Conversations = dcount(ConversationId),
+        Users = dcountif(AadObjectId, isnotempty(AadObjectId)),
+        EngagedSessions = countif(IsEngaged),
+        Resolved = countif(IsResolved),
+        Escalated = countif(IsEscalated),
+        Abandoned = countif(IsAbandoned),
+        AvgTurns = avg(todouble(TurnCount)),
+        MedianDurationSeconds = percentile(todouble(datetime_diff('second', SessionEnd, SessionStart)), 50),
+        FirstSeen = min(SessionStart),
+        LastSeen = max(SessionStart)
+        by EnvironmentId, EnvironmentName, BotId, BotName
+    | extend
+        EngagementRate = round(todouble(EngagedSessions) / Sessions, 4),
+        ResolutionRate = iff(EngagedSessions > 0, round(todouble(Resolved) / EngagedSessions, 4), real(null)),
+        EscalationRate = iff(EngagedSessions > 0, round(todouble(Escalated) / EngagedSessions, 4), real(null)),
+        AbandonRate = iff(EngagedSessions > 0, round(todouble(Abandoned) / EngagedSessions, 4), real(null))
+    | order by Sessions desc
+}
+
+//
+// 3. Daily trend, for time-series visuals.
+//
+.create-or-alter function
+with (
+    docstring = "Daily session volume and outcome mix per agent, for trend visuals.",
+    folder = "CopilotStudio"
+)
+CopilotDailyTrend(lookback: timespan = 90d, includeDesignMode: bool = false) {
+    CopilotSession()
+    | where SessionStart > ago(lookback)
+    | where includeDesignMode or not(coalesce(IsDesignMode, false))
+    | summarize
+        Sessions = count(),
+        EngagedSessions = countif(IsEngaged),
+        Resolved = countif(IsResolved),
+        Escalated = countif(IsEscalated),
+        Abandoned = countif(IsAbandoned),
+        Users = dcountif(AadObjectId, isnotempty(AadObjectId)),
+        AvgTurns = avg(todouble(TurnCount))
+        by Day = startofday(SessionStart), EnvironmentName, BotId, BotName
+    | order by Day asc, Sessions desc
+}
+
+//
+// 4. Test-pane versus real traffic.
+//
+// Answers "how much of what we are reporting is a maker testing their own
+// agent", which is the first question to ask of any adoption number here.
+//
+.create-or-alter function
+with (
+    docstring = "Splits sessions into Copilot Studio test pane traffic and real user traffic, per agent.",
+    folder = "CopilotStudio"
+)
+CopilotDesignModeSplit(lookback: timespan = 30d) {
+    CopilotSession()
+    | where SessionStart > ago(lookback)
+    | summarize
+        Sessions = count(),
+        TestPane = countif(coalesce(IsDesignMode, false)),
+        RealUsers = countif(not(coalesce(IsDesignMode, false)))
+        by EnvironmentName, BotId, BotName
+    | extend TestPaneShare = round(todouble(TestPane) / Sessions, 4)
+    | order by Sessions desc
+}
+

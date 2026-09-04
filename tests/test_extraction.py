@@ -201,6 +201,44 @@ def test_non_ready_instances_are_skipped():
 # --------------------------------------------------------------------------
 
 
+def test_bot_identifiers_are_kept_separate():
+    """The runtime BotId and the Dataverse foreign key are different values.
+
+    metadata.BotId is a runtime agent identifier that does not join to the bot
+    table. _bot_conversationtranscriptid_value is the actual foreign key. An
+    earlier version coalesced them, which silently broke the agent join.
+    """
+    from copilot_transcript_sync.dataverse import DataverseTranscriptReader
+
+    environment = PowerPlatformEnvironment(
+        environment_id="env-1",
+        display_name="Env",
+        environment_url="https://org.crm.dynamics.com",
+        organization_id="org-1",
+        environment_type="Production",
+        state="Ready",
+        is_default=False,
+    )
+    reader = DataverseTranscriptReader(None, None, environment, 25)
+
+    row = reader._project(
+        {
+            "conversationtranscriptid": "t1",
+            "name": "conv_runtimebot",
+            "metadata": '{"BotId":"runtimebot","BotName":"cr123_myAgent"}',
+            "_bot_conversationtranscriptid_value": "dataverse-bot-guid",
+            "content": "[]",
+        },
+        "2026-05-01T00:00:00+00:00",
+    )
+
+    assert row.bot_id == "runtimebot"
+    assert row.dataverse_bot_id == "dataverse-bot-guid"
+    # BotName carries the schema name, not a display name.
+    assert row.bot_name == "cr123_myAgent"
+    assert row.conversation_id == "conv"
+
+
 def test_transcript_row_serializes_expected_columns():
     row = TranscriptRow(
         environment_id="env-1",
@@ -211,6 +249,7 @@ def test_transcript_row_serializes_expected_columns():
         name="conv_bot",
         conversation_id="conv",
         bot_id="bot",
+        dataverse_bot_id="dv-bot",
         bot_name="Test Bot",
         batch_id="2",
         aad_tenant_id="tenant",
@@ -246,6 +285,7 @@ def test_transcript_row_json_line_has_no_newlines():
         name="n",
         conversation_id="c",
         bot_id="b",
+        dataverse_bot_id="dv-b",
         bot_name="Bot",
         batch_id="",
         aad_tenant_id="t",
@@ -282,3 +322,4 @@ def test_watermark_parse_assumes_utc_when_naive():
 def test_watermark_parse_returns_none_on_garbage():
     assert _parse("not a date") is None
     assert _parse("") is None
+

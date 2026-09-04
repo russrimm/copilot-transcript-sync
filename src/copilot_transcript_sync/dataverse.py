@@ -61,6 +61,7 @@ class TranscriptRow:
     name: str
     conversation_id: str
     bot_id: str
+    dataverse_bot_id: str
     bot_name: str
     batch_id: str
     aad_tenant_id: str
@@ -86,6 +87,7 @@ class TranscriptRow:
                 "Name": self.name,
                 "ConversationId": self.conversation_id,
                 "BotId": self.bot_id,
+                "DataverseBotId": self.dataverse_bot_id,
                 "BotName": self.bot_name,
                 "BatchId": self.batch_id,
                 "AadTenantId": self.aad_tenant_id,
@@ -213,9 +215,18 @@ class DataverseTranscriptReader:
         content, content_error = _loads(raw.get("content"))
 
         metadata_map = metadata if isinstance(metadata, dict) else {}
-        bot_id = str(
-            metadata_map.get("BotId") or raw.get("_bot_conversationtranscriptid_value") or ""
-        )
+
+        # Two different bot identifiers exist, and they are not interchangeable:
+        #
+        #   metadata.BotId                        a runtime agent identifier
+        #   _bot_conversationtranscriptid_value   the Dataverse bot table key
+        #
+        # Only the second joins to the bot table. Both are kept because the
+        # relationship between them is undocumented. Note also that
+        # metadata.BotName holds the agent's *schema name*, not its display
+        # name -- the display name only exists in the bot table.
+        bot_id = str(metadata_map.get("BotId") or "")
+        dataverse_bot_id = str(raw.get("_bot_conversationtranscriptid_value") or "")
         batch_id = metadata_map.get("BatchId")
 
         name = raw.get("name") or ""
@@ -229,6 +240,7 @@ class DataverseTranscriptReader:
             name=name,
             conversation_id=_conversation_id(name, bot_id),
             bot_id=bot_id,
+            dataverse_bot_id=dataverse_bot_id,
             bot_name=str(metadata_map.get("BotName") or ""),
             batch_id="" if batch_id is None else str(batch_id),
             aad_tenant_id=str(metadata_map.get("AADTenantId") or ""),

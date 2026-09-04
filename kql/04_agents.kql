@@ -1,0 +1,180 @@
+//
+// Copilot Studio agent dimension, from the Dataverse bot table.
+// Run after 01_tables.kql.
+//
+// Transcripts carry only BotId and BotName. This adds the governance metadata
+// that makes agent reporting useful: authentication mode, access control
+// policy, publish state, ownership, and the generative configuration blob.
+//
+// Column names were read from a live environment's EntityDefinitions rather
+// than from documentation. Re-check yours with:
+//   python scripts/probe_table_schema.py --table bot
+//
+
+.create-merge table CopilotAgentRaw (
+    EnvironmentId: string,
+    EnvironmentName: string,
+    EnvironmentUrl: string,
+    BotId: string,
+    Name: string,
+    SchemaName: string,
+    Language: int,
+    AuthenticationMode: int,
+    AuthenticationTrigger: int,
+    AccessControlPolicy: int,
+    AccessControlPolicyLabel: string,
+    StateCode: int,
+    StateLabel: string,
+    StatusCode: int,
+    Template: string,
+    ComponentState: int,
+    IsManaged: bool,
+    SolutionId: string,
+    PublishedOn: datetime,
+    CreatedOn: datetime,
+    ModifiedOn: datetime,
+    VersionNumber: long,
+    OwnerId: string,
+    OwningUserId: string,
+    OwningBusinessUnitId: string,
+    PublishedById: string,
+    CreatedById: string,
+    ModifiedById: string,
+    Configuration: dynamic,
+    IngestedAt: datetime
+)
+
+.alter table CopilotAgentRaw docstring
+    "Copilot Studio agent metadata from the Dataverse bot table, collected from every environment. Append-only; one row per agent per sync. Query CopilotAgent instead."
+
+.alter table CopilotAgentRaw column-docstrings (
+    BotId: "Dataverse bot primary key. Joins to CopilotSession and CopilotTranscript on BotId.",
+    SchemaName: "Solution-qualified unique name, stable across environments when the agent is shipped in a solution.",
+    AuthenticationMode: "0 = no authentication, 1 = Teams/Power Platform, 2 = manual. Verify against your tenant before relying on the mapping.",
+    AccessControlPolicyLabel: "Resolved label for AccessControlPolicy: Any, Copilot readers, Group membership, or Any (multi-tenant).",
+    Configuration: "BotConfiguration JSON, including generative AI settings. Undocumented shape, so treat defensively.",
+    IngestedAt: "UTC time this sync run read the row. Used to pick the winner when deduplicating."
+)
+
+.create-or-alter table CopilotAgentRaw ingestion json mapping "CopilotAgentRawMapping"
+```
+[
+  {"column":"EnvironmentId","Properties":{"Path":"$.EnvironmentId"}},
+  {"column":"EnvironmentName","Properties":{"Path":"$.EnvironmentName"}},
+  {"column":"EnvironmentUrl","Properties":{"Path":"$.EnvironmentUrl"}},
+  {"column":"BotId","Properties":{"Path":"$.BotId"}},
+  {"column":"Name","Properties":{"Path":"$.Name"}},
+  {"column":"SchemaName","Properties":{"Path":"$.SchemaName"}},
+  {"column":"Language","Properties":{"Path":"$.Language"}},
+  {"column":"AuthenticationMode","Properties":{"Path":"$.AuthenticationMode"}},
+  {"column":"AuthenticationTrigger","Properties":{"Path":"$.AuthenticationTrigger"}},
+  {"column":"AccessControlPolicy","Properties":{"Path":"$.AccessControlPolicy"}},
+  {"column":"AccessControlPolicyLabel","Properties":{"Path":"$.AccessControlPolicyLabel"}},
+  {"column":"StateCode","Properties":{"Path":"$.StateCode"}},
+  {"column":"StateLabel","Properties":{"Path":"$.StateLabel"}},
+  {"column":"StatusCode","Properties":{"Path":"$.StatusCode"}},
+  {"column":"Template","Properties":{"Path":"$.Template"}},
+  {"column":"ComponentState","Properties":{"Path":"$.ComponentState"}},
+  {"column":"IsManaged","Properties":{"Path":"$.IsManaged"}},
+  {"column":"SolutionId","Properties":{"Path":"$.SolutionId"}},
+  {"column":"PublishedOn","Properties":{"Path":"$.PublishedOn"}},
+  {"column":"CreatedOn","Properties":{"Path":"$.CreatedOn"}},
+  {"column":"ModifiedOn","Properties":{"Path":"$.ModifiedOn"}},
+  {"column":"VersionNumber","Properties":{"Path":"$.VersionNumber"}},
+  {"column":"OwnerId","Properties":{"Path":"$.OwnerId"}},
+  {"column":"OwningUserId","Properties":{"Path":"$.OwningUserId"}},
+  {"column":"OwningBusinessUnitId","Properties":{"Path":"$.OwningBusinessUnitId"}},
+  {"column":"PublishedById","Properties":{"Path":"$.PublishedById"}},
+  {"column":"CreatedById","Properties":{"Path":"$.CreatedById"}},
+  {"column":"ModifiedById","Properties":{"Path":"$.ModifiedById"}},
+  {"column":"Configuration","Properties":{"Path":"$.Configuration"}},
+  {"column":"IngestedAt","Properties":{"Path":"$.IngestedAt"}}
+]
+```
+
+// The whole agent table is re-read every run, so this grows quickly and most of
+// it is redundant history. Keep less than the transcript archive.
+.alter-merge table CopilotAgentRaw policy retention softdelete = 180d recoverability = enabled
+
+.alter table CopilotAgentRaw policy caching hot = 30d
+
+//
+// Current state of each agent: the most recently ingested row per BotId.
+//
+// Not a materialized view. Agents are re-read in full on every run, so this
+// changes far more often than transcripts do, and the table is small enough
+// that a function is cheaper than maintaining a view.
+//
+.create-or-alter function
+with (
+    docstring = "Current metadata for every Copilot Studio agent across the tenant, one row per agent.",
+    folder = "CopilotStudio"
+)
+CopilotAgent() {
+    CopilotAgentRaw
+    | summarize arg_max(IngestedAt, *) by BotId
+}
+
+//
+// Agent inventory joined to actual usage.
+//
+// Joined on DataverseBotId, the transcript's foreign key into the bot table.
+// Do NOT join on the transcript's BotId: that is a separate runtime identifier
+// in a different ID space and matches nothing here.
+//
+// The interesting column is Sessions == 0: an agent that exists, is published,
+// and nobody has used. Transcript data alone cannot show that, because an
+// unused agent produces no transcripts.
+//
+.create-or-alter function
+with (
+    docstring = "Every agent in the tenant with its session usage, including agents with no traffic at all.",
+    folder = "CopilotStudio"
+)
+CopilotAgentInventory(lookback: timespan = 30d, includeDesignMode: bool = false) {
+    let usage =
+        CopilotSession()
+        | where SessionStart > ago(lookback)
+        | where includeDesignMode or not(coalesce(IsDesignMode, false))
+        | where isnotempty(DataverseBotId)
+        | summarize
+            Sessions = count(),
+            Users = dcountif(AadObjectId, isnotempty(AadObjectId)),
+            Engaged = countif(IsEngaged),
+            Resolved = countif(IsResolved),
+            Escalated = countif(IsEscalated),
+            LastUsed = max(SessionStart)
+            by BotId = DataverseBotId;
+    CopilotAgent()
+    | join kind=leftouter usage on BotId
+    | extend
+        Sessions = coalesce(Sessions, 0),
+        Users = coalesce(Users, 0),
+        Engaged = coalesce(Engaged, 0),
+        Resolved = coalesce(Resolved, 0),
+        Escalated = coalesce(Escalated, 0),
+        IsPublished = isnotnull(PublishedOn),
+        DaysSincePublished = iff(isnotnull(PublishedOn), datetime_diff('day', now(), PublishedOn), int(null))
+    | project
+        EnvironmentName, Name, SchemaName, BotId,
+        StateLabel, AccessControlPolicyLabel, AuthenticationMode,
+        IsPublished, PublishedOn, DaysSincePublished, CreatedOn, ModifiedOn,
+        Sessions, Users, Engaged, Resolved, Escalated, LastUsed,
+        IsManaged, Template, OwnerId
+    | order by Sessions desc, Name asc
+}
+
+//
+// Agents that exist but nobody uses.
+//
+.create-or-alter function
+with (
+    docstring = "Published agents with no real user sessions in the window. Candidates for retirement or enablement.",
+    folder = "CopilotStudio"
+)
+CopilotUnusedAgents(lookback: timespan = 30d) {
+    CopilotAgentInventory(lookback, false)
+    | where Sessions == 0
+    | project EnvironmentName, Name, SchemaName, StateLabel, IsPublished, PublishedOn, DaysSincePublished, CreatedOn, OwnerId
+    | order by DaysSincePublished desc
+}

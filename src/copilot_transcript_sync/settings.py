@@ -47,6 +47,7 @@ class Settings:
     adx_ingest_uri: str
     adx_database: str
     adx_raw_table: str
+    adx_agent_table: str
 
     watermark_table_endpoint: str
     watermark_table_name: str
@@ -57,6 +58,7 @@ class Settings:
     max_concurrent_environments: int
 
     auto_provision_app_user: bool
+    sync_agents: bool
     read_only_role_name: str
     excluded_environment_types: frozenset[str] = field(default_factory=frozenset)
 
@@ -78,6 +80,7 @@ class Settings:
             adx_ingest_uri=_get("ADX_INGEST_URI", required=True).rstrip("/"),
             adx_database=_get("ADX_DATABASE", required=True),
             adx_raw_table=_get("ADX_RAW_TABLE", "CopilotTranscriptRaw"),
+            adx_agent_table=_get("ADX_AGENT_TABLE", "CopilotAgentRaw"),
             watermark_table_endpoint=_get("WATERMARK_TABLE_ENDPOINT", required=True).rstrip("/"),
             watermark_table_name=_get("WATERMARK_TABLE_NAME", "SyncWatermarks"),
             initial_backfill_days=_get_int("INITIAL_BACKFILL_DAYS", 30),
@@ -85,6 +88,7 @@ class Settings:
             dataverse_page_size=_get_int("DATAVERSE_PAGE_SIZE", 25),
             max_concurrent_environments=_get_int("MAX_CONCURRENT_ENVIRONMENTS", 4),
             auto_provision_app_user=_get_bool("AUTO_PROVISION_APP_USER", True),
+            sync_agents=_get_bool("SYNC_AGENTS", True),
             read_only_role_name=_get("READ_ONLY_ROLE_NAME"),
             excluded_environment_types=frozenset(excluded),
         )

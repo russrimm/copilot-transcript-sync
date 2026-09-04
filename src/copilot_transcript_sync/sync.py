@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 
 import httpx
 
-from .adx import AdxTranscriptSink
+from .adx import AdxSink, agent_sink, transcript_sink
+from .agents import DataverseAgentReader
 from .credentials import azure_credential, power_platform_credential
 from .dataverse import DataverseTranscriptReader
 from .http import DEFAULT_TIMEOUT, TokenProvider
@@ -29,6 +30,7 @@ class EnvironmentResult:
     environment_name: str
     environment_type: str
     rows: int = 0
+    agents: int = 0
     skipped: bool = False
     error: str | None = None
 
@@ -41,6 +43,7 @@ class SyncResult:
     environments_synced: int = 0
     environments_failed: int = 0
     rows_ingested: int = 0
+    agents_ingested: int = 0
     environments: list[EnvironmentResult] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -84,12 +87,12 @@ def run_sync(settings: Settings) -> SyncResult:
                 if is_transcript_eligible(environment, settings.excluded_environment_types)
             ]
 
-            with AdxTranscriptSink(
-                ingest_uri=settings.adx_ingest_uri,
-                database=settings.adx_database,
-                table=settings.adx_raw_table,
-                credential=az_credential,
-            ) as sink:
+            with transcript_sink(
+                settings.adx_ingest_uri,
+                settings.adx_database,
+                settings.adx_raw_table,
+                az_credential,
+            ) as sink, _maybe_agent_sink(settings, az_credential) as agents:
                 for environment in eligible:
                     outcome = _sync_environment(
                         environment=environment,
@@ -98,6 +101,7 @@ def run_sync(settings: Settings) -> SyncResult:
                         http_client=http_client,
                         pp_tokens=pp_tokens,
                         sink=sink,
+                        agent_sink_=agents,
                         watermarks=watermarks,
                     )
                     result.environments.append(outcome)
@@ -106,21 +110,58 @@ def run_sync(settings: Settings) -> SyncResult:
                     elif not outcome.skipped:
                         result.environments_synced += 1
 
-                # Flush before reading the total so the count reflects real work.
+                # Flush before reading the totals so counts reflect real work.
                 sink.flush()
                 result.rows_ingested = sink.rows_ingested
+                if agents is not None:
+                    agents.flush()
+                    result.agents_ingested = agents.rows_ingested
     finally:
         watermarks.close()
 
     result.finished_at = datetime.now(timezone.utc).isoformat()
     logger.info(
-        "Sync complete: %d/%d environments synced, %d failed, %d rows ingested.",
+        "Sync complete: %d/%d environments synced, %d failed, %d transcripts, %d agents.",
         result.environments_synced,
         result.environments_discovered,
         result.environments_failed,
         result.rows_ingested,
+        result.agents_ingested,
     )
     return result
+
+
+class _NullSink:
+    """Stands in for the agent sink when agent sync is disabled."""
+
+    rows_ingested = 0
+
+    def add(self, _row: object) -> None:  # pragma: no cover - trivial
+        raise RuntimeError("Agent sync is disabled.")
+
+    def flush(self) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *_exc: object) -> None:
+        return
+
+
+def _maybe_agent_sink(settings: Settings, credential):
+    """Return an agent sink, or a no-op context yielding None when disabled."""
+    if not settings.sync_agents:
+        return _NullSink()
+    return agent_sink(
+        settings.adx_ingest_uri,
+        settings.adx_database,
+        settings.adx_agent_table,
+        credential,
+    )
 
 
 def _sync_environment(
@@ -130,7 +171,8 @@ def _sync_environment(
     admin: PowerPlatformAdminClient,
     http_client: httpx.Client,
     pp_tokens: TokenProvider,
-    sink: AdxTranscriptSink,
+    sink: AdxSink,
+    agent_sink_: AdxSink | None,
     watermarks: WatermarkStore,
 ) -> EnvironmentResult:
     outcome = EnvironmentResult(
@@ -141,6 +183,19 @@ def _sync_environment(
 
     if settings.auto_provision_app_user:
         admin.ensure_application_user(environment.environment_id, settings.app_client_id)
+
+    # Agents are a small dimension, read in full each run. A failure here must
+    # not stop transcript extraction, which is the point of the pipeline.
+    if agent_sink_ is not None:
+        try:
+            agent_reader = DataverseAgentReader(http_client, pp_tokens, environment)
+            for agent in agent_reader.read_all():
+                agent_sink_.add(agent)
+                outcome.agents += 1
+        except (PermissionError, httpx.HTTPError, RuntimeError) as exc:
+            logger.warning(
+                "Could not read agents in '%s': %s", environment.display_name, str(exc)[:200]
+            )
 
     since = watermarks.read_start_time(environment.environment_id)
     reader = DataverseTranscriptReader(
@@ -183,7 +238,13 @@ def _sync_environment(
             environment.environment_id, environment.display_name, highest_created_on
         )
     else:
+        # Agents may still have been collected, so "skipped" means only that no
+        # new transcripts arrived.
         outcome.skipped = True
-        logger.info("No new transcripts in environment '%s'.", environment.display_name)
+        logger.info(
+            "No new transcripts in environment '%s' (%d agents read).",
+            environment.display_name,
+            outcome.agents,
+        )
 
     return outcome

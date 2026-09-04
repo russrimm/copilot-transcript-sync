@@ -24,6 +24,7 @@ def _settings(**overrides) -> Settings:
         adx_ingest_uri="https://ingest-cluster.kusto.windows.net",
         adx_database="CopilotTranscripts",
         adx_raw_table="CopilotTranscriptRaw",
+        adx_agent_table="CopilotAgentRaw",
         watermark_table_endpoint="https://st.table.core.windows.net",
         watermark_table_name="SyncWatermarks",
         initial_backfill_days=30,
@@ -31,6 +32,7 @@ def _settings(**overrides) -> Settings:
         dataverse_page_size=25,
         max_concurrent_environments=4,
         auto_provision_app_user=True,
+        sync_agents=False,
         read_only_role_name="",
         excluded_environment_types=frozenset(),
     )
@@ -60,6 +62,7 @@ def _row(env: PowerPlatformEnvironment, index: int, created_on: datetime) -> Tra
         name=f"conv{index}_bot",
         conversation_id=f"conv{index}",
         bot_id="bot",
+        dataverse_bot_id="dv-bot",
         bot_name="Bot",
         batch_id="0",
         aad_tenant_id="tenant",
@@ -128,6 +131,22 @@ class FakeAdmin:
         return True
 
 
+class FakeAgentReader:
+    """Yields a fixed number of agents per environment."""
+
+    per_environment = 2
+    fail_for: set[str] = set()
+
+    def __init__(self, _client, _tokens, environment, *_args):
+        self._environment = environment
+
+    def read_all(self):
+        if self._environment.environment_id in FakeAgentReader.fail_for:
+            raise PermissionError("no access to bot table")
+        for index in range(FakeAgentReader.per_environment):
+            yield f"agent-{self._environment.environment_id}-{index}"
+
+
 @pytest.fixture
 def wired(monkeypatch):
     """Replace every external dependency of run_sync with a fake."""
@@ -142,13 +161,22 @@ def wired(monkeypatch):
         created["watermarks"] = store
         return store
 
-    def _make_sink(**_kwargs):
+    def _make_sink(*_args, **_kwargs):
         sink = FakeSink()
         created["sink"] = sink
         return sink
 
+    def _make_agent_sink(*_args, **_kwargs):
+        sink = FakeSink()
+        created["agent_sink"] = sink
+        return sink
+
     monkeypatch.setattr(sync_module, "WatermarkStore", _make_watermarks)
-    monkeypatch.setattr(sync_module, "AdxTranscriptSink", _make_sink)
+    monkeypatch.setattr(sync_module, "transcript_sink", _make_sink)
+    monkeypatch.setattr(sync_module, "agent_sink", _make_agent_sink)
+    monkeypatch.setattr(sync_module, "DataverseAgentReader", FakeAgentReader)
+    FakeAgentReader.fail_for = set()
+    FakeAgentReader.per_environment = 2
     return created
 
 
@@ -335,3 +363,61 @@ def test_app_user_provisioning_can_be_disabled(monkeypatch, wired):
     sync_module.run_sync(_settings(auto_provision_app_user=False))
 
     assert admin.provisioned == []
+
+
+# --------------------------------------------------------------------------
+# Agent dimension sync
+# --------------------------------------------------------------------------
+
+
+def test_agents_are_collected_when_enabled(monkeypatch, wired):
+    environments = [_environment("env1", "Prod"), _environment("env2", "Other")]
+    monkeypatch.setattr(
+        sync_module, "PowerPlatformAdminClient", lambda *_a: FakeAdmin(environments)
+    )
+    _install_reader(monkeypatch, lambda _env_id, _since: [])
+
+    result = sync_module.run_sync(_settings(sync_agents=True))
+
+    # Two environments, two agents each.
+    assert result.agents_ingested == 4
+    assert all(e.agents == 2 for e in result.environments)
+
+
+def test_agents_are_not_collected_when_disabled(monkeypatch, wired):
+    env = _environment("env1", "Prod")
+    monkeypatch.setattr(sync_module, "PowerPlatformAdminClient", lambda *_a: FakeAdmin([env]))
+    _install_reader(monkeypatch, lambda _env_id, _since: [])
+
+    result = sync_module.run_sync(_settings(sync_agents=False))
+
+    assert result.agents_ingested == 0
+    assert "agent_sink" not in wired
+
+
+def test_agent_failure_does_not_stop_transcript_extraction(monkeypatch, wired):
+    """Reading agents is secondary; losing it must not cost transcripts."""
+    env = _environment("env1", "Prod")
+    monkeypatch.setattr(sync_module, "PowerPlatformAdminClient", lambda *_a: FakeAdmin([env]))
+    FakeAgentReader.fail_for = {"env1"}
+    _install_reader(monkeypatch, lambda _env_id, _since: [_row(env, 0, NOW)])
+
+    result = sync_module.run_sync(_settings(sync_agents=True))
+
+    assert result.rows_ingested == 1
+    assert result.environments_failed == 0
+    assert result.agents_ingested == 0
+    assert result.environments[0].error is None
+
+
+def test_agents_collected_even_when_no_new_transcripts(monkeypatch, wired):
+    """An environment with no new transcripts still refreshes its agent metadata."""
+    env = _environment("env1", "Prod")
+    monkeypatch.setattr(sync_module, "PowerPlatformAdminClient", lambda *_a: FakeAdmin([env]))
+    _install_reader(monkeypatch, lambda _env_id, _since: [])
+
+    result = sync_module.run_sync(_settings(sync_agents=True))
+
+    assert result.environments[0].skipped is True
+    assert result.environments[0].agents == 2
+    assert result.agents_ingested == 2
