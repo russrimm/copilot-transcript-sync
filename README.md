@@ -342,9 +342,45 @@ conversation rather than a parsing bug. `CopilotTranscriptTurn()` accepts all th
 
 ## Implementation
 
-The bootstrap is circular by nature: the infrastructure needs the app registration's client
-ID, and the federated credential needs the managed identity's principal ID, which only exists
-after the infrastructure is deployed. Follow the order below.
+Two options: one command, or the seven steps individually.
+
+### Quick install
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+az login          # as a Power Platform or Global Administrator
+./scripts/install.ps1
+```
+
+`install.ps1` chains all seven steps, passes client IDs and principal IDs between
+them, retries alternative Azure Data Explorer SKUs when a region has no capacity,
+runs the first sync, and verifies the result. It takes 20-30 minutes, most of it
+waiting for the cluster.
+
+```powershell
+./scripts/install.ps1 -ResourceGroup rg-transcripts -Location westus2
+./scripts/install.ps1 -FromStep 5     # resume after fixing a failure
+```
+
+Removal is the mirror image, and cleans up the tenant-level objects that deleting
+the resource group leaves behind:
+
+```powershell
+./scripts/uninstall.ps1 -WhatIf       # report, change nothing
+./scripts/uninstall.ps1               # prompts for the resource group name
+```
+
+The script still needs an interactive administrator sign-in: a service principal
+cannot register itself as a Power Platform management application, by design.
+
+### The steps individually
+
+Follow these to understand what the installer does, or when you want to run part
+of it yourself. The bootstrap is circular by nature: the infrastructure needs the
+app registration's client ID, and the federated credential needs the managed
+identity's principal ID, which only exists after the infrastructure is deployed.
 
 ```mermaid
 flowchart LR
@@ -818,9 +854,12 @@ copilot-transcript-sync/
 │   └── 02_views.kql                    Dedup materialized view and query functions
 │
 ├── scripts/
+│   ├── install.ps1                     One-command install, chains all seven steps
+│   ├── uninstall.ps1                   One-command removal, including tenant objects
 │   ├── 01-create-app-registration.ps1  Bootstrap phase 1
 │   ├── 02-federate-and-register.ps1    Bootstrap phase 2
 │   ├── deploy_kql.py                   Applies the KQL schema
+│   ├── verify_install.py               Post-install health check, non-zero on failure
 │   ├── smoke_discovery.py              Live tenant environment listing
 │   ├── smoke_extract.py                Live extraction and ingestion
 │   ├── smoke_pairing.py                Pairing check with synthetic data
@@ -887,39 +926,49 @@ These talk to the real tenant and cluster, and are not part of `pytest`:
 ## Teardown
 
 ```powershell
-# Azure resources
-az group delete --name rg-copilot-transcripts --yes --no-wait
+./scripts/uninstall.ps1
 ```
 
-Deleting the resource group does **not** remove the tenant-level objects. Those need explicit
-cleanup:
+That removes all four things, in the order that matters:
+
+1. **Dataverse application users** in every environment. First, because it needs the app
+   registration to still exist in order to enumerate environments and authenticate.
+2. **The Power Platform management application** registration.
+3. **The Entra app registration** and its service principal.
+4. **The Azure resource group.**
+
+Deleting the resource group alone leaves 1-3 behind: an app registration with tenant-wide
+Power Platform rights, and a System Administrator application user in every environment.
 
 ```powershell
-# 1. Remove the Dataverse application users from every environment
-python scripts/cleanup_app_users.py --client-id <client-id>            # report first
-python scripts/cleanup_app_users.py --client-id <client-id> --delete   # then remove
+./scripts/uninstall.ps1 -WhatIf                    # report only
+./scripts/uninstall.ps1 -Force                     # skip the confirmation prompt
+./scripts/uninstall.ps1 -KeepResourceGroup         # tenant objects only
+./scripts/uninstall.ps1 -AppClientId <id>          # when the registration is already gone
+```
 
-# 2. Unregister the Power Platform management application
+If step 1 fails the script **stops** rather than continuing, because deleting the app
+registration would orphan those application users and make them much harder to find. To do
+the steps by hand:
+
+```powershell
+python scripts/cleanup_app_users.py --client-id <client-id> --delete
+
 $t = az account get-access-token --resource "https://service.powerapps.com/" --query accessToken -o tsv
 Invoke-RestMethod -Method DELETE -Headers @{Authorization = "Bearer $t"} `
   -Uri "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/adminApplications/<client-id>?api-version=2020-10-01"
 
-# 3. Remove the app registration and its service principal
 az ad app delete --id <client-id>
+az group delete --name rg-copilot-transcripts --yes
 ```
 
-Do step 1 **before** step 3. Removing the application users needs the environment list, and
-that is easiest while the app still exists.
-
 > The admin center documents only a manual, per-environment removal of application users, and
-> the Dataverse Web API has no documented recipe for it either. It does work: disable the
-> `systemuser` record with `PATCH isdisabled=true`, then `DELETE` it.
-> `scripts/cleanup_app_users.py` does this across the tenant, verified against 7 environments.
-
-Step 2 uses a REST `DELETE` that Microsoft does not document but which works and is verified
-here. The documented equivalent is `Remove-PowerAppManagementApp -ApplicationId <client-id>`
-from the `Microsoft.PowerApps.Administration.PowerShell` module, if you prefer the supported
-path.
+> the Dataverse Web API has no documented recipe either. It does work: disable the `systemuser`
+> record with `PATCH isdisabled=true`, then `DELETE` it. `scripts/cleanup_app_users.py` does
+> this across the tenant, verified against 7 environments.
+>
+> The REST `DELETE` for the management application is undocumented but works and is verified
+> here. The documented equivalent is `Remove-PowerAppManagementApp -ApplicationId <client-id>`.
 
 ---
 
@@ -947,18 +996,22 @@ path.
 
 ## Verification status
 
-Verified by a **complete teardown and clean reinstall**, following the steps in this README
-exactly, from an empty resource group and a tenant with no prior app registration:
+Verified by a **complete teardown and clean reinstall**, run twice: once step by step, and
+once as a single `install.ps1` from an empty resource group and a tenant with no prior app
+registration.
 
 | Step | Result |
 |---|---|
 | 1. Create app registration | Worked. Script's own next-step output contradicted this README and was corrected |
-| 2. Deploy infrastructure | Template correct. Regional Azure Data Explorer capacity rejected the default SKU twice; an alternative Dev SKU succeeded |
+| 2. Deploy infrastructure | Template correct. Regional Azure Data Explorer capacity rejected the default SKU twice; the installer now retries alternatives automatically |
 | 3. Federate and register | Worked first try |
-| 4. Apply the KQL schema | Worked first try on a genuinely fresh database |
-| 5. Publish the Function | Worked first try via the documented local-build path; both triggers indexed |
+| 4. Apply the KQL schema | Worked. `AzureCliCredential`'s 10-second default subprocess timeout later failed on a cold CLI; raised to 120s across every script |
+| 5. Publish the Function | Worked via the documented local-build path; both triggers indexed |
 | 6. First run | 12 environments discovered, 7 transcripts ingested, 0 failures |
 | 7. Verify | 0 parse errors, 0 ingestion failures, coverage correct |
+| `install.ps1` end to end | Completed, including automated verification |
+| `uninstall.ps1 -WhatIf` | Reported all four phases accurately and changed nothing |
+| `uninstall.ps1` | Removed all four, verified nothing left behind |
 
 Behavior confirmed by the same run:
 

@@ -28,7 +28,7 @@ EXCLUDED = frozenset({"developer", "teams"})
 
 
 def main() -> int:
-    tokens = TokenProvider(DefaultAzureCredential())
+    tokens = TokenProvider(DefaultAzureCredential(process_timeout=120))
 
     with httpx.Client(timeout=DEFAULT_TIMEOUT, follow_redirects=True) as client:
         admin = PowerPlatformAdminClient(client, tokens)

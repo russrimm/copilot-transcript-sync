@@ -39,7 +39,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    tokens = TokenProvider(AzureCliCredential())
+    # process_timeout is raised because the 10-second default regularly times out
+    # against a cold Azure CLI, surfacing as "Failed to invoke the Azure CLI".
+    tokens = TokenProvider(AzureCliCredential(process_timeout=120))
     found = 0
     removed = 0
 

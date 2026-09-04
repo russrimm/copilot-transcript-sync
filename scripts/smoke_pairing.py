@@ -83,7 +83,7 @@ def main() -> int:
     parser.add_argument("--keep", action="store_true", help="Do not delete the synthetic row.")
     args = parser.parse_args()
 
-    credential = AzureCliCredential()
+    credential = AzureCliCredential(process_timeout=120)
 
     with AdxTranscriptSink(
         ingest_uri=args.ingest,

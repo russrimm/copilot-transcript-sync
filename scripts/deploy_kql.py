@@ -100,7 +100,14 @@ def main() -> int:
         print(f"No .kql files found in {KQL_DIR}", file=sys.stderr)
         return 1
 
-    credential = AzureCliCredential() if args.credential == "cli" else DefaultAzureCredential()
+    # AzureCliCredential shells out to `az`, with a 10-second default timeout that
+    # a cold CLI on a loaded machine regularly exceeds. The failure surfaces as a
+    # confusing "Failed to invoke the Azure CLI" rather than a timeout.
+    credential = (
+        AzureCliCredential(process_timeout=120)
+        if args.credential == "cli"
+        else DefaultAzureCredential(process_timeout=120)
+    )
 
     kcsb = KustoConnectionStringBuilder.with_azure_token_credential(
         args.cluster.rstrip("/"), credential=credential

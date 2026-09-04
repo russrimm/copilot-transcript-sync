@@ -42,7 +42,7 @@ def main() -> int:
     args = parser.parse_args()
 
     kcsb = KustoConnectionStringBuilder.with_azure_token_credential(
-        args.cluster.rstrip("/"), credential=AzureCliCredential()
+        args.cluster.rstrip("/"), credential=AzureCliCredential(process_timeout=120)
     )
 
     with KustoClient(kcsb) as client:

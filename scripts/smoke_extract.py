@@ -45,7 +45,7 @@ def main() -> int:
 
     # Power Platform: whatever DefaultAzureCredential resolves to.
     # ADX: the az login session, which the Bicep grants Admin.
-    pp_tokens = TokenProvider(DefaultAzureCredential())
+    pp_tokens = TokenProvider(DefaultAzureCredential(process_timeout=120))
     since = datetime.now(timezone.utc) - timedelta(days=args.days)
 
     totals: list[tuple[str, str, int, str]] = []
@@ -63,7 +63,7 @@ def main() -> int:
                 ingest_uri=args.ingest,
                 database=args.database,
                 table=args.table,
-                credential=AzureCliCredential(),
+                credential=AzureCliCredential(process_timeout=120),
             )
 
         try:
