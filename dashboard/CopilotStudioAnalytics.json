@@ -1,0 +1,784 @@
+{
+  "$schema": "https://dataexplorer.azure.com/static/d/schema/20/dashboard.json",
+  "schema_version": "20",
+  "id": "ba21c1a7-9b0a-5d20-be59-a4cc47a60171",
+  "title": "Copilot Studio analytics",
+  "autoRefresh": {
+    "enabled": true,
+    "defaultInterval": "30m",
+    "minInterval": "5m"
+  },
+  "dataSources": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "name": "Copilot transcripts",
+      "scopeId": "kusto",
+      "kind": "manual-kusto",
+      "clusterUri": "https://your-cluster.region.kusto.windows.net",
+      "database": "CopilotTranscripts"
+    }
+  ],
+  "pages": [
+    {
+      "id": "27caa812-3253-5a75-ba69-985043284802",
+      "name": "Overview"
+    },
+    {
+      "id": "b9f51b61-999c-5a9f-867f-738f1d293ca7",
+      "name": "Agents"
+    },
+    {
+      "id": "d04514ef-da15-5a77-a2a1-2746e9f92ace",
+      "name": "Adoption"
+    },
+    {
+      "id": "2be7e670-9d41-5744-b621-4a453aa883bf",
+      "name": "Governance"
+    }
+  ],
+  "tiles": [
+    {
+      "id": "07661b52-3b82-58b6-b14d-fab032d68724",
+      "title": "Sessions",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Value = count()",
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 4,
+        "height": 3
+      },
+      "pageId": "27caa812-3253-5a75-ba69-985043284802",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "6ac4c451-a92f-550c-91fe-c2b89fc5606d",
+      "title": "People",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Value = dcountif(AadObjectId, isnotempty(AadObjectId))",
+      "layout": {
+        "x": 4,
+        "y": 0,
+        "width": 4,
+        "height": 3
+      },
+      "pageId": "27caa812-3253-5a75-ba69-985043284802",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "dfd977d3-3f76-5b28-8f03-15fde8c9c7f4",
+      "title": "Agents used",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Value = dcount(DataverseBotId)",
+      "layout": {
+        "x": 8,
+        "y": 0,
+        "width": 4,
+        "height": 3
+      },
+      "pageId": "27caa812-3253-5a75-ba69-985043284802",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "9ae2399b-5a0a-5f5f-8b40-c97fa61d2205",
+      "title": "Engagement rate %",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Value = round(100.0 * countif(IsEngaged) / count(), 1)",
+      "layout": {
+        "x": 12,
+        "y": 0,
+        "width": 4,
+        "height": 3
+      },
+      "pageId": "27caa812-3253-5a75-ba69-985043284802",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "4c4d2715-367f-59cd-8ab1-b9a8cdc67793",
+      "title": "Resolution rate %",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Value = round(100.0 * countif(IsResolved) / countif(IsEngaged), 1)",
+      "layout": {
+        "x": 16,
+        "y": 0,
+        "width": 4,
+        "height": 3
+      },
+      "pageId": "27caa812-3253-5a75-ba69-985043284802",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "97e8b1db-eb18-5196-a10e-61e708db9b38",
+      "title": "Median turns",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Value = percentile(TurnCount, 50)",
+      "layout": {
+        "x": 20,
+        "y": 0,
+        "width": 4,
+        "height": 3
+      },
+      "pageId": "27caa812-3253-5a75-ba69-985043284802",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "944b1abe-7454-5979-816f-09129408d713",
+      "title": "Sessions over time",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Sessions = count(), Engaged = countif(IsEngaged)\n    by bin(SessionStart, 1d)\n| order by SessionStart asc",
+      "layout": {
+        "x": 0,
+        "y": 3,
+        "width": 12,
+        "height": 7
+      },
+      "pageId": "27caa812-3253-5a75-ba69-985043284802",
+      "visualType": "line",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "xColumn": {
+          "type": "infer"
+        },
+        "yColumns": {
+          "type": "infer"
+        },
+        "hideLegend": false,
+        "yColumnTitle": "Sessions"
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "c471314f-4263-5fbb-b06b-97ba8a9a4629",
+      "title": "Session outcome",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| extend Outcome = iff(isempty(Outcome), \"(none recorded)\", Outcome)\n| summarize Sessions = count() by Outcome\n| order by Sessions desc",
+      "layout": {
+        "x": 12,
+        "y": 3,
+        "width": 6,
+        "height": 7
+      },
+      "pageId": "27caa812-3253-5a75-ba69-985043284802",
+      "visualType": "pie",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "hideLegend": false
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "c7861768-2f69-5aaa-bb0f-78f4c088bc69",
+      "title": "Sessions by environment",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Sessions = count() by EnvironmentName\n| order by Sessions desc",
+      "layout": {
+        "x": 18,
+        "y": 3,
+        "width": 6,
+        "height": 7
+      },
+      "pageId": "27caa812-3253-5a75-ba69-985043284802",
+      "visualType": "bar",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "hideLegend": true,
+        "xColumnTitle": "Sessions"
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "22aba95a-ab42-52a7-b48e-50e250cdad7b",
+      "title": "Busiest agents",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Sessions = count(),\n            People = dcountif(AadObjectId, isnotempty(AadObjectId)),\n            AvgTurns = round(avg(TurnCount), 1)\n    by BotName\n| order by Sessions desc\n| take 15",
+      "layout": {
+        "x": 0,
+        "y": 10,
+        "width": 12,
+        "height": 7
+      },
+      "pageId": "27caa812-3253-5a75-ba69-985043284802",
+      "visualType": "table",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {},
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "e8dafaa8-2ca2-5d4b-b392-7ebda13081bb",
+      "title": "Channels",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| extend ChannelId = iff(isempty(ChannelId), \"(unknown)\", ChannelId)\n| summarize Sessions = count() by ChannelId\n| order by Sessions desc",
+      "layout": {
+        "x": 12,
+        "y": 10,
+        "width": 12,
+        "height": 7
+      },
+      "pageId": "27caa812-3253-5a75-ba69-985043284802",
+      "visualType": "bar",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "hideLegend": true,
+        "xColumnTitle": "Sessions"
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "880c5fb0-3e36-51d0-837e-af65b6d95d71",
+      "title": "Agent performance",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Sessions = count(),\n            People = dcountif(AadObjectId, isnotempty(AadObjectId)),\n            EngagementPct = round(100.0 * countif(IsEngaged) / count(), 1),\n            ResolutionPct = round(100.0 * countif(IsResolved) / countif(IsEngaged), 1),\n            EscalationPct = round(100.0 * countif(IsEscalated) / countif(IsEngaged), 1),\n            AvgTurns = round(avg(TurnCount), 1)\n    by BotName, EnvironmentName\n| order by Sessions desc",
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 24,
+        "height": 8
+      },
+      "pageId": "b9f51b61-999c-5a9f-867f-738f1d293ca7",
+      "visualType": "table",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {},
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "2a253c48-9212-5093-b36e-4797e999fc62",
+      "title": "Escalation rate by agent",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Engaged = countif(IsEngaged), Escalated = countif(IsEscalated)\n    by BotName\n| where Engaged > 0\n| extend EscalationPct = round(100.0 * Escalated / Engaged, 1)\n| project BotName, EscalationPct\n| top 15 by EscalationPct desc",
+      "layout": {
+        "x": 0,
+        "y": 8,
+        "width": 12,
+        "height": 7
+      },
+      "pageId": "b9f51b61-999c-5a9f-867f-738f1d293ca7",
+      "visualType": "bar",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "hideLegend": true,
+        "xColumnTitle": "Escalation rate (%)"
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "69730859-b82f-5fa2-b1c9-982449900f29",
+      "title": "Turns per session",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Sessions = count() by TurnBucket = bin(TurnCount, 2)\n| order by TurnBucket asc",
+      "layout": {
+        "x": 12,
+        "y": 8,
+        "width": 12,
+        "height": 7
+      },
+      "pageId": "b9f51b61-999c-5a9f-867f-738f1d293ca7",
+      "visualType": "column",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "hideLegend": true,
+        "xColumnTitle": "Turns"
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "45422c80-0298-5ee6-a49e-b4f1d86b17b5",
+      "title": "Attribution coverage %",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Attributable = countif(isnotempty(AadObjectId)), Total = count()\n| project Value = round(100.0 * Attributable / Total, 1)",
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 6,
+        "height": 3
+      },
+      "pageId": "d04514ef-da15-5a77-a2a1-2746e9f92ace",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "cb087379-3a9a-59ee-8c7b-419c72cc2705",
+      "title": "People",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Value = dcountif(AadObjectId, isnotempty(AadObjectId))",
+      "layout": {
+        "x": 6,
+        "y": 0,
+        "width": 6,
+        "height": 3
+      },
+      "pageId": "d04514ef-da15-5a77-a2a1-2746e9f92ace",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "f13a07ef-4e1e-5f4e-93b3-746f6625c74f",
+      "title": "Sessions per person",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| where isnotempty(AadObjectId)\n| summarize Sessions = count(), People = dcount(AadObjectId)\n| project Value = round(1.0 * Sessions / People, 1)",
+      "layout": {
+        "x": 12,
+        "y": 0,
+        "width": 6,
+        "height": 3
+      },
+      "pageId": "d04514ef-da15-5a77-a2a1-2746e9f92ace",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "3b9efa08-aab6-5985-bcd6-eb4ff77ace33",
+      "title": "Unattributed sessions",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| summarize Attributable = countif(isnotempty(AadObjectId)), Total = count()\n| project Value = Total - Attributable",
+      "layout": {
+        "x": 18,
+        "y": 0,
+        "width": 6,
+        "height": 3
+      },
+      "pageId": "d04514ef-da15-5a77-a2a1-2746e9f92ace",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "699180d9-0505-5d5f-976b-151694e0abe9",
+      "title": "Adoption by department",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| where isnotempty(AadObjectId)\n| join kind=leftouter (CopilotUser()) on AadObjectId\n| extend Department = iff(isempty(Department), \"(unresolved)\", Department)\n| summarize Sessions = count() by Department\n| order by Sessions desc",
+      "layout": {
+        "x": 0,
+        "y": 3,
+        "width": 12,
+        "height": 8
+      },
+      "pageId": "d04514ef-da15-5a77-a2a1-2746e9f92ace",
+      "visualType": "bar",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "hideLegend": true,
+        "xColumnTitle": "Sessions"
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "4a305791-e6d4-5823-8da8-58e60836f5c1",
+      "title": "Adoption by job title",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| where isnotempty(AadObjectId)\n| join kind=leftouter (CopilotUser()) on AadObjectId\n| extend JobTitle = iff(isempty(JobTitle), \"(unresolved)\", JobTitle)\n| summarize People = dcount(AadObjectId), Sessions = count() by JobTitle\n| order by Sessions desc\n| take 15",
+      "layout": {
+        "x": 12,
+        "y": 3,
+        "width": 12,
+        "height": 8
+      },
+      "pageId": "d04514ef-da15-5a77-a2a1-2746e9f92ace",
+      "visualType": "table",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {},
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "311f869f-609c-57d1-955a-30c800e38658",
+      "title": "Daily active people",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| where IncludeTestPane or not(coalesce(IsDesignMode, false))\n| where isnotempty(AadObjectId)\n| summarize People = dcount(AadObjectId) by bin(SessionStart, 1d)\n| order by SessionStart asc",
+      "layout": {
+        "x": 0,
+        "y": 11,
+        "width": 24,
+        "height": 6
+      },
+      "pageId": "d04514ef-da15-5a77-a2a1-2746e9f92ace",
+      "visualType": "line",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "xColumn": {
+          "type": "infer"
+        },
+        "yColumns": {
+          "type": "infer"
+        },
+        "hideLegend": true,
+        "yColumnTitle": "People"
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime",
+        "IncludeTestPane"
+      ]
+    },
+    {
+      "id": "c21f8b4e-043b-5ac1-9b85-a257a5829c30",
+      "title": "Agents in tenant",
+      "query": "CopilotAgent()\n| summarize Value = count()",
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 6,
+        "height": 3
+      },
+      "pageId": "2be7e670-9d41-5744-b621-4a453aa883bf",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": []
+    },
+    {
+      "id": "ddc24ede-a394-5846-86f4-1cd03b39b3b2",
+      "title": "Published agents",
+      "query": "CopilotAgent()\n| summarize Value = countif(isnotnull(PublishedOn))",
+      "layout": {
+        "x": 6,
+        "y": 0,
+        "width": 6,
+        "height": 3
+      },
+      "pageId": "2be7e670-9d41-5744-b621-4a453aa883bf",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": []
+    },
+    {
+      "id": "017e4e59-8a25-5536-9143-aa057ac98742",
+      "title": "Agents with no sessions",
+      "query": "let used = CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n    | distinct DataverseBotId;\nCopilotAgent()\n| where BotId !in (used)\n| summarize Value = count()",
+      "layout": {
+        "x": 12,
+        "y": 0,
+        "width": 6,
+        "height": 3
+      },
+      "pageId": "2be7e670-9d41-5744-b621-4a453aa883bf",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime"
+      ]
+    },
+    {
+      "id": "5a50ac94-7cb9-5b88-a285-97847b96bcd2",
+      "title": "Environments with agents",
+      "query": "CopilotAgent()\n| summarize Value = dcount(EnvironmentId)",
+      "layout": {
+        "x": 18,
+        "y": 0,
+        "width": 6,
+        "height": 3
+      },
+      "pageId": "2be7e670-9d41-5744-b621-4a453aa883bf",
+      "visualType": "card",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "multiStat__textSize": "large",
+        "multiStat__valueColumn": {
+          "type": "infer"
+        },
+        "colorRulesDisabled": true
+      },
+      "usedParamVariables": []
+    },
+    {
+      "id": "9d591fa2-5053-5153-bc30-24ac327c7614",
+      "title": "Unused agents",
+      "query": "let used = CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n    | distinct DataverseBotId;\nCopilotAgent()\n| where BotId !in (used)\n| project Name, EnvironmentName, StateLabel,\n          AccessControlPolicyLabel, PublishedOn, CreatedOn\n| order by CreatedOn desc",
+      "layout": {
+        "x": 0,
+        "y": 3,
+        "width": 14,
+        "height": 8
+      },
+      "pageId": "2be7e670-9d41-5744-b621-4a453aa883bf",
+      "visualType": "table",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {},
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime"
+      ]
+    },
+    {
+      "id": "fd4b592b-195c-549b-b896-23f71b2c6d1f",
+      "title": "Agents by environment",
+      "query": "CopilotAgent()\n| summarize Agents = count() by EnvironmentName\n| order by Agents desc",
+      "layout": {
+        "x": 14,
+        "y": 3,
+        "width": 10,
+        "height": 8
+      },
+      "pageId": "2be7e670-9d41-5744-b621-4a453aa883bf",
+      "visualType": "bar",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "hideLegend": true,
+        "xColumnTitle": "Agents"
+      },
+      "usedParamVariables": []
+    },
+    {
+      "id": "714909df-6002-573c-a552-f4a238a47383",
+      "title": "Access control policy",
+      "query": "CopilotAgent()\n| extend AccessControlPolicyLabel = iff(isempty(AccessControlPolicyLabel),\n    \"(unspecified)\", AccessControlPolicyLabel)\n| summarize Agents = count() by AccessControlPolicyLabel\n| order by Agents desc",
+      "layout": {
+        "x": 0,
+        "y": 11,
+        "width": 8,
+        "height": 6
+      },
+      "pageId": "2be7e670-9d41-5744-b621-4a453aa883bf",
+      "visualType": "pie",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "hideLegend": false
+      },
+      "usedParamVariables": []
+    },
+    {
+      "id": "ed52485d-e88c-5fa0-8c0c-3a9cad0428ea",
+      "title": "Test pane share of traffic",
+      "query": "CopilotSession()\n| where SessionStart between (_startTime .. _endTime)\n| summarize Sessions = count() by Kind = iff(coalesce(IsDesignMode, false),\n    \"Test pane\", \"Real traffic\")",
+      "layout": {
+        "x": 8,
+        "y": 11,
+        "width": 8,
+        "height": 6
+      },
+      "pageId": "2be7e670-9d41-5744-b621-4a453aa883bf",
+      "visualType": "pie",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {
+        "hideLegend": false
+      },
+      "usedParamVariables": [
+        "_startTime",
+        "_endTime"
+      ]
+    },
+    {
+      "id": "42206698-ecb1-5a0b-8c31-de0a3eeedf7a",
+      "title": "Environment coverage",
+      "query": "CopilotTranscriptCoverage(30d)",
+      "layout": {
+        "x": 16,
+        "y": 11,
+        "width": 8,
+        "height": 6
+      },
+      "pageId": "2be7e670-9d41-5744-b621-4a453aa883bf",
+      "visualType": "table",
+      "dataSourceId": "11111111-1111-4111-8111-111111111111",
+      "visualOptions": {},
+      "usedParamVariables": []
+    }
+  ],
+  "parameters": [
+    {
+      "id": "8d5fd2e4-7378-5f2e-b0d2-8bc355aa7e8c",
+      "displayName": "Time range",
+      "kind": "duration",
+      "beginVariableName": "_startTime",
+      "endVariableName": "_endTime",
+      "showOnPages": {
+        "kind": "all"
+      },
+      "defaultValue": {
+        "kind": "dynamic",
+        "count": 30,
+        "unit": "days"
+      }
+    },
+    {
+      "id": "fa4debcc-5bfc-5b9f-8061-d728dd84a517",
+      "displayName": "Include test pane",
+      "kind": "bool",
+      "variableName": "IncludeTestPane",
+      "selectionType": "single",
+      "showOnPages": {
+        "kind": "all"
+      },
+      "dataSource": {
+        "kind": "static",
+        "values": [
+          {
+            "displayText": "Real traffic only",
+            "value": false
+          },
+          {
+            "displayText": "Include test pane",
+            "value": true
+          }
+        ]
+      },
+      "defaultValue": {
+        "kind": "value",
+        "value": false
+      }
+    }
+  ]
+}

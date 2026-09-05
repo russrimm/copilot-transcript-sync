@@ -21,7 +21,7 @@ exceeds what the source keeps.
 - [Implementation](#implementation)
 - [Operating the pipeline](#operating-the-pipeline)
 - [Querying the archive](#querying-the-archive)
-- [Power BI template](#power-bi-template)
+- [Dashboard](#dashboard)
 - [Configuration](#configuration)
 - [Security posture](#security-posture)
 - [Repository layout](#repository-layout)
@@ -843,123 +843,92 @@ with `scripts/grant_graph_permission.ps1`.
 
 ---
 
-## Power BI template
+## Dashboard
 
-`powerbi/CopilotStudioAnalytics.pbit` is a template — not a report bound to
-this deployment — so it prompts for the cluster and database on open and
-carries no tenant data.
+`dashboard/CopilotStudioAnalytics.json` is an Azure Data Explorer dashboard: 30
+tiles across four pages — Overview, Agents, Adoption and Governance — every one
+of them a query against the KQL semantic layer above. It carries no tenant data
+and no cluster name, so it is safe to commit and to share.
 
-Build it from source:
+### Import it
 
 ```powershell
-python powerbi/build_template.py
+python dashboard/build_dashboard.py `
+    --cluster https://yourcluster.eastus.kusto.windows.net `
+    --database CopilotTranscripts
 ```
 
-Open the generated `.pbit` and supply four parameters:
+Then in the [Azure Data Explorer web UI](https://dataexplorer.azure.com):
+**Dashboards → New dashboard → Import dashboard from file**, pick the generated
+JSON, and give it a name.
 
-| Parameter | Example | Purpose |
+Passing `--cluster` bakes the connection in so the dashboard works on import.
+Omit it and the file keeps a placeholder, which you point at your own cluster
+under **Data sources** after importing.
+
+Viewers need **Viewer** on the database. Nothing else is deployed and nothing
+else is billed — the dashboard is a feature of the cluster you already have.
+
+### What it shows
+
+| Page | Answers |
+|---|---|
+| Overview | How much is Copilot Studio being used, by whom, through which channels, and is usage rising |
+| Agents | Which agents carry the load, which escalate most, how long conversations run |
+| Adoption | Which departments and job titles have adopted it, and what share of sessions can be attributed at all |
+| Governance | Which agents exist, which are published, which are unused, and how much traffic is really just the test pane |
+
+Two controls apply across every page:
+
+- **Time range** — a standard dashboard time picker, default 30 days.
+- **Include test pane** — off by default. Copilot Studio records authoring-time
+  conversations as sessions, and in this tenant they were 85% of all traffic.
+  Leave it off for adoption reporting; turn it on to investigate a specific
+  agent's behavior.
+
+The Governance page deliberately ignores the time range for its agent
+inventory. An unused agent produces no sessions, so it cannot be found by
+filtering sessions — which is exactly why that page exists.
+
+### Why a dashboard and not a Power BI template
+
+This started as a Power BI `.pbit`. That was abandoned, and the reasoning is
+worth recording because it is a general lesson rather than a Power BI
+complaint.
+
+No supported Microsoft library writes a `.pbit`. Building one means
+reverse-engineering an undocumented binary container, and five separate defects
+turned up in the hand-written package before it was dropped — a truncated
+`DataMashup` part, a missing byte order mark, a declared-but-absent part, a
+`Version` value that silently deferred the parameters a user typed, and missing
+per-formula metadata that made Power BI try to load parameters as data tables.
+Each one failed the same way: no error, or *"it may be corrupted"*.
+
+The dashboard format is the opposite in every respect that matters:
+
+| | `.pbit` | ADX dashboard |
 |---|---|---|
-| `ClusterUri` | `https://adxexample.eastus.kusto.windows.net` | Your Azure Data Explorer cluster |
-| `DatabaseName` | `CopilotTranscripts` | Database created in step 4 |
-| `LookbackDays` | `90` | Window loaded into the model |
-| `IncludeTestPane` | `false` | Whether design-mode sessions are included |
+| Format | Undocumented binary container | [Documented JSON](https://learn.microsoft.com/en-us/azure/data-explorer/azure-data-explorer-dashboards#export-dashboards) |
+| Schema | None published | [Published and machine-readable](https://dataexplorer.azure.com/static/d/schema/20/dashboard.json) |
+| Validation before shipping | Not possible | `build_dashboard.py` validates every build |
+| Query verification | Not possible offline | `verify_queries.py` runs all 30 tiles |
+| Extra infrastructure | Power BI Desktop, then a workspace | None |
 
-### The first load needs a second click
-
-After you click **Load**, Power BI opens an **Azure Data Explorer (Kusto)**
-sign-in dialog, because the cluster is a data source it has not seen before.
-Until you click **Connect** there, nothing is sent to the cluster.
-
-The **Refresh** progress dialog often opens on top of that sign-in dialog and
-covers its buttons. What you see is a Refresh box listing every query as
-*"Waiting for other queries…"*, apparently spinning forever. It is not slow —
-it is blocked behind a prompt you cannot see.
-
-Drag the Refresh dialog aside, click **Connect** on the Azure Data Explorer
-dialog underneath, and the load proceeds.
-
-You can confirm which situation you are in from the cluster rather than
-guessing, because a blocked load sends nothing at all:
-
-```kusto
-.show queries
-| where StartedOn > ago(30m) and Application == "PowerBIConnector"
-| project StartedOn, State, substring(Text, 0, 40)
-| order by StartedOn desc
-```
-
-No rows means Power BI never reached the cluster and is waiting on the sign-in
-prompt. Rows with `State == "Completed"` mean the data arrived and any
-remaining problem is on the report side.
-
-The model is a star schema: a `Sessions` fact against `Agents`, `Users`,
-`Environments` and `Dates` dimensions, with 26 measures and four report pages —
-Overview, Agents, Adoption and Governance. Every query behind it is one of the
-KQL functions above, so the report and ad-hoc analysis cannot drift apart.
-
-Refresh signs in as you, so you need **Viewer** on the database. The template
-loads with import storage mode; on a Dev-tier cluster keep `LookbackDays`
-modest.
-
-### Two Power BI Desktop installs
-
-Power BI Desktop ships both as a Microsoft Store app and as a downloadable
-installer, and the two can be present at once at different versions. They are
-separate programs with separate update channels — upgrading one does not touch
-the other.
-
-This matters because the Store build owns the `.pbit` file association, so a
-double-click opens the Store build even when the newer installer build is the
-one you have been using. Check which builds you have:
+Both generators can be checked before anyone opens the result:
 
 ```powershell
-Get-AppxPackage -Name "*PowerBIDesktop*" | Select-Object Name, Version
-(Get-Item "C:\Program Files\Microsoft Power BI Desktop\bin\PBIDesktop.exe").VersionInfo.ProductVersion
+python dashboard/build_dashboard.py          # fails the build on a schema violation
+python dashboard/verify_queries.py --cluster https://yourcluster.eastus.kusto.windows.net
 ```
 
-To open the template with a specific build rather than whichever one owns the
-association:
+The second one matters more than it looks. Schema validation proves the file is
+well formed; it says nothing about whether the KQL works. `verify_queries.py`
+substitutes the dashboard parameters and executes every tile, so a broken query
+is caught in the terminal rather than by someone staring at an empty tile.
 
-```powershell
-& "C:\Program Files\Microsoft Power BI Desktop\bin\PBIDesktop.exe" `
-    "powerbi\CopilotStudioAnalytics.pbit"
-```
-
-If the template loads under one build and not the other, this is the first
-thing to rule out.
-
-### About the `.pbit` format
-
-The generator writes the package by hand because no supported Microsoft library
-produces one. Four details are undocumented, and each one on its own makes
-Power BI Desktop reject the file with only *"We couldn't open your file… it may
-be corrupted"*:
-
-* `DataMashup` is a version field followed by **four** length-prefixed sections
-  — the Power Query ZIP, a permissions XML, a metadata block and permission
-  bindings. Writing only the version and the ZIP truncates the part.
-* The metadata block is itself a version, a length-prefixed UTF-8 XML document
-  and a length-prefixed content blob.
-* Most parts are UTF-16LE with **no** BOM, but `[Content_Types].xml` is UTF-8
-  **with** one.
-* `[Content_Types].xml` may not declare a part that is absent. `SecurityBindings`
-  is a DPAPI blob tied to the authoring machine, so a redistributable template
-  omits both the part and its declaration.
-
-One further value is version-sensitive rather than structural, and it fails in a
-way that looks like success. The `Version` part must match what the installed
-Power BI Desktop writes — currently `1.30`. An older value still *opens*, and
-still prompts for parameters, but triggers an upgrade pass that leaves the
-values you typed sitting in an `UnappliedChanges` part instead of applying them.
-The document then never finishes loading and Power BI quietly returns to its
-start screen with no error at all. The give-away is a file appearing in
-`%LOCALAPPDATA%\Microsoft\Power BI Desktop\TempSaves\Backups` named
-`<template>_UpgradeFrom<version>.pbix`.
-
-These were read off a Microsoft-published template
-(*Microsoft 365 Usage Analytics*) and off Power BI's own output rather than
-guessed, and `build_template.py` re-parses its own output to confirm every
-section length adds up before writing.
+If you do want Power BI on top of this, the supported path is to build it in
+Power BI Desktop against the same KQL functions and export the template from
+Power BI itself, rather than generating the package by hand.
 
 ---
 
@@ -1050,11 +1019,10 @@ copilot-transcript-sync/
 │   ├── 04_agents.kql                   Agent dimension and inventory
 │   └── 05_users.kql                    Entra user dimension and adoption
 │
-├── powerbi/
-│   ├── Section1.m                      Power Query parameters and table queries
-│   ├── model.py                        Tabular model: tables, relationships, measures
-│   ├── layout.py                       Report pages and visuals
-│   └── build_template.py               Assembles CopilotStudioAnalytics.pbit
+├── dashboard/
+│   ├── build_dashboard.py              Generates the ADX dashboard, schema-validated
+│   ├── verify_queries.py               Runs every tile against a live cluster
+│   └── CopilotStudioAnalytics.json     Importable dashboard, no tenant data
 │
 ├── scripts/
 │   ├── install.ps1                     One-command install, chains all seven steps
@@ -1129,10 +1097,9 @@ These talk to the real tenant and cluster, and are not part of `pytest`:
 | Every ADX call fails as an opaque network error | The cluster is stopped. A stopped cluster does not restart on a query | `az kusto cluster start`. The Bicep sets `enableAutoStop: false`, but a subscription cost automation can still stop it |
 | `HTTP transport has already been closed` mid-run | The Kusto SDK closes any credential handed to it, so a shared instance breaks later consumers | Each consumer builds its own credential; do not reintroduce a cached one |
 | User dimension stays empty with `SYNC_USERS=true` | `User.Read.All` not granted to the managed identity | Run `scripts/grant_graph_permission.ps1`. `az ad app permission` does not work for managed identities |
-| Power BI reports the `.pbit` is corrupted | A hand-written package part is malformed | Rebuild with `python powerbi/build_template.py`; it re-parses its own output. See [About the `.pbit` format](#about-the-pbit-format) |
-| Template prompts for parameters, then returns to the Power BI start screen with no error | The `Version` part is older than the installed Power BI Desktop, so the values land in `UnappliedChanges` instead of being applied | Check `TempSaves\Backups` for an `_UpgradeFrom<version>.pbix`, then set `Version` to match. See [About the `.pbit` format](#about-the-pbit-format) |
-| Refresh dialog lists every query as "Waiting for other queries…" and never finishes | The Azure Data Explorer sign-in dialog is open behind it, so nothing has been sent to the cluster | Move the Refresh dialog and click **Connect**. See [The first load needs a second click](#the-first-load-needs-a-second-click) |
-| Power BI closes itself part way through loading the template | Two Power BI Desktop builds are installed and the double-click is opening the older one | Check `Get-AppxPackage -Name "*PowerBIDesktop*"` against `C:\Program Files\Microsoft Power BI Desktop`. Open the template from the build you intend, rather than by double-click. See [Two Power BI Desktop installs](#two-power-bi-desktop-installs) |
+| Dashboard imports but every tile is empty | The data source still points at the placeholder cluster | Rebuild with `--cluster`, or set the cluster under **Data sources** in the dashboard |
+| A single dashboard tile shows an error | The KQL function it calls is missing or was changed | Re-run `scripts/deploy_kql.py`, then `python dashboard/verify_queries.py --cluster <uri>` to see which tile and why |
+| Dashboard shows far more sessions than expected | **Include test pane** is on, so authoring-time conversations are counted | Switch it back to *Real traffic only* |
 
 ---
 
@@ -1245,8 +1212,7 @@ Behavior confirmed by the same run:
 | Agent dimension | 120 agents synced; join verified against `_bot_conversationtranscriptid_value`, not `metadata.BotId` |
 | Entra user dimension | Resolved end to end through Microsoft Graph after granting `User.Read.All` to the managed identity |
 | Session facts | 33 sessions built from raw activities; `CopilotDesignModeSplit()` correctly separated 28 test-pane from 5 real sessions |
-| Power BI template | Opened in Power BI Desktop 2.157.1354.0. Model verified against the local Analysis Services engine: 5 tables, 26 measures, 4 relationships, 4 parameters. Report layout verified intact: 4 pages, 39 visuals |
-| Template Kusto queries | All four run against the live cluster with the expected shape: Sessions 5 rows, Agents 120, Users 1, Environments 12. The cluster's own `.show queries` log confirms Power BI reaching it as `PowerBIConnector` and every query completing |
+| Dashboard | Validated against Microsoft's published JSON schema on every build. All 30 tiles executed against the live cluster and returned data |
 | Teardown | Resource group, application users, management app registration, and app registration all removed and verified |
 | Unit tests | 64 passing, no Azure required |
 
@@ -1256,35 +1222,31 @@ transcript past its 30-day retention in the interim — which is the reason this
 Not exercised: `enablePrivateNetworking=false`. Every deployment here ran under a policy that
 forces storage private, so the simpler topology is reasoned about but untested.
 
-The Power BI template was verified structurally — it opens and the model loads — against a
-tenant holding only 5 non-test-pane sessions and 1 attributable user. The visuals are correct
-but sparse at that volume, and `CopilotAttributionCoverage()` is worth running before reading
-anything into the Adoption page. A refresh against a live cluster was **not** part of that
-check: the template ships with placeholder parameter defaults, so the first refresh happens
-only once you supply your own cluster.
+The dashboard is verified as far as it can be without a human looking at it: the file matches
+the published schema, and every tile query runs and returns data. Whether each visual is the
+*right* visual for its data is a judgement call, not a test. With only 5 non-test-pane sessions
+and 1 attributable user in this tenant, the Adoption page in particular will look sparse —
+run `CopilotAttributionCoverage()` before reading anything into it.
 
-Power BI Desktop crashed several times while this template was being developed, on both
-installed builds, with a stack overflow (`0xc00000fd`). Two real defects were found and fixed
-in that window — the stale `Version` part, and a bidirectional relationship that should always
-have been single-direction. Neither is claimed as the cause.
+### On the abandoned Power BI template
 
-What was established, by testing rather than reasoning:
+A hand-written `.pbit` generator was built first and then removed. Recorded here because the
+failure mode generalizes beyond Power BI.
 
-| Test | Result |
+Five defects were found in the hand-written package, each one surfacing only after the previous
+was fixed, and none of them producing a usable error message. Along the way three of the
+conclusions reported during that work were wrong and had to be retracted:
+
+| Claimed | Actually |
 |---|---|
-| Power BI idle with no document, 705 s | No crash |
-| Template with data loaded and **no visuals**, 720 s | No crash |
-| Template with all 39 visuals, data loaded | Loads; longest clean observation 780 s |
+| "The model loaded successfully" | The check was reading stale Analysis Services workspaces left by earlier runs |
+| "Reproduced the crash with no visuals, so the model is at fault" | The test harness sent a keystroke every 12 seconds that the control run never received; removing it removed the crashes |
+| "Power BI is pegged at 97% CPU, so something is spinning" | Power BI Desktop idling with no document open uses ~64% of a core on this machine; CPU was never a signal |
 
-An earlier round of testing appeared to show the opposite — crashes with and without visuals —
-but that harness sent a keystroke every 12 seconds for the whole run to clear dialogs, which
-the idle control never received. Removing that confound removed the crashes. Those results
-were discarded rather than reported.
-
-The cluster's `.show queries` log is the reliable signal here, not the Power BI window: it
-shows whether the connector ever reached the cluster. Two separate "it loaded" conclusions
-earlier in development were false positives from checking stale Analysis Services workspaces
-instead.
+The lesson that carried into the dashboard work: verify against an independent source that
+cannot be fooled by the thing being tested. The cluster's own `.show queries` log settled every
+question the desktop UI could not — whether a query ever arrived, whether it completed, and how
+long it took. `dashboard/verify_queries.py` is the direct descendant of that.
 
 ---
 
