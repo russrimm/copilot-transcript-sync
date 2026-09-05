@@ -37,6 +37,7 @@ import argparse
 import io
 import json
 import pathlib
+import re
 import struct
 import sys
 import zipfile
@@ -103,20 +104,65 @@ MASHUP_PERMISSIONS = (
     "</PermissionList>"
 )
 
-# Power Query caches per-formula state here. Power BI repopulates it on first
-# refresh, so the template only has to declare the section-wide settings.
-MASHUP_METADATA_XML = (
-    BOM + '<?xml version="1.0" encoding="utf-8"?>'
-    '<LocalPackageMetadataFile xmlns:xsd="http://www.w3.org/2001/XMLSchema" '
-    'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
-    "<Items><Item>"
-    "<ItemLocation><ItemType>AllFormulas</ItemType><ItemPath /></ItemLocation>"
-    "<StableEntries>"
-    '<Entry Type="IsTypeDetectionEnabled" Value="sTrue" />'
-    '<Entry Type="RunBackgroundAnalysis" Value="sFalse" />'
-    "</StableEntries>"
-    "</Item></Items></LocalPackageMetadataFile>"
+# Per-formula Power Query state. This is not optional bookkeeping: without an
+# entry marking each parameter as not loaded, Power BI treats all nine shared
+# formulas as tables to load, tries to materialize the four parameters as data
+# tables, and spins on "Syncing schema..." burning a full core until it
+# eventually dies. The values mirror a Microsoft-published template.
+PARAMETERS = (
+    ("ClusterUri", "Text"),
+    ("DatabaseName", "Text"),
+    ("LookbackDays", "Number"),
+    ("IncludeTestPane", "Logical"),
 )
+
+TABLE_QUERIES = ("Sessions", "Agents", "Users", "Environments", "Dates")
+
+
+def _metadata_item(path: str, entries: str) -> str:
+    return (
+        "<Item><ItemLocation><ItemType>Formula</ItemType>"
+        f"<ItemPath>Section1/{path}</ItemPath></ItemLocation>"
+        f"<StableEntries>{entries}</StableEntries></Item>"
+    )
+
+
+def build_mashup_metadata_xml() -> str:
+    items = [
+        "<Item><ItemLocation><ItemType>AllFormulas</ItemType><ItemPath /></ItemLocation>"
+        "<StableEntries>"
+        '<Entry Type="IsTypeDetectionEnabled" Value="sTrue" />'
+        '<Entry Type="RunBackgroundAnalysis" Value="sFalse" />'
+        "</StableEntries></Item>"
+    ]
+
+    for name, result_type in PARAMETERS:
+        items.append(
+            _metadata_item(
+                name,
+                '<Entry Type="LoadedToAnalysisServices" Value="l0" />'
+                '<Entry Type="LoadToReportDisabled" Value="l1" />'
+                f'<Entry Type="ResultType" Value="s{result_type}" />',
+            )
+        )
+
+    for name in TABLE_QUERIES:
+        items.append(
+            _metadata_item(
+                name,
+                '<Entry Type="IsDirectQuery" Value="l0" />'
+                '<Entry Type="LoadedToAnalysisServices" Value="l1" />'
+                '<Entry Type="LoadToReportDisabled" Value="l0" />'
+                '<Entry Type="ResultType" Value="sTable" />',
+            )
+        )
+
+    return (
+        BOM + '<?xml version="1.0" encoding="utf-8"?>'
+        '<LocalPackageMetadataFile xmlns:xsd="http://www.w3.org/2001/XMLSchema" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+        "<Items>" + "".join(items) + "</Items></LocalPackageMetadataFile>"
+    )
 
 # End-of-central-directory record for a ZIP with no entries.
 EMPTY_ZIP = bytes.fromhex("504b0506" + "00" * 18)
@@ -140,7 +186,7 @@ def build_data_mashup(section_m: str) -> bytes:
         package.writestr("[Content_Types].xml", MASHUP_CONTENT_TYPES)
         package.writestr("Formulas/Section1.m", section_m)
 
-    metadata_xml = MASHUP_METADATA_XML.encode("utf-8")
+    metadata_xml = build_mashup_metadata_xml().encode("utf-8")
     metadata = struct.pack("<I", 0) + _section(metadata_xml) + _section(EMPTY_ZIP)
 
     return (
@@ -223,6 +269,19 @@ def write_template(out_path: pathlib.Path) -> pathlib.Path:
         raise SystemExit(f"Missing Power Query definitions: {SECTION_M}")
 
     section_m = SECTION_M.read_text(encoding="utf-8")
+
+    # Every shared formula needs a metadata entry. A query with no entry is
+    # treated as a table to load, so a parameter that is missing here makes
+    # Power BI hang trying to materialize it.
+    declared = {name for name, _ in PARAMETERS} | set(TABLE_QUERIES)
+    actual = set(re.findall(r"(?m)^shared\s+([A-Za-z_][\w]*)\s*=", section_m))
+    if actual != declared:
+        raise SystemExit(
+            "Section1.m and the metadata declarations disagree.\n"
+            f"  only in Section1.m : {sorted(actual - declared)}\n"
+            f"  only in metadata   : {sorted(declared - actual)}"
+        )
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     def utf16(text: str) -> bytes:
