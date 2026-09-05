@@ -61,6 +61,26 @@ def session_base() -> str:
     return f"CopilotSession()\n{TIME_FILTER}\n{DESIGN_MODE_FILTER}"
 
 
+def session_by_agent() -> str:
+    """Sessions with the agent's display name resolved.
+
+    Transcript metadata carries the agent's *schema* name (``cr7d6_serviceNow``),
+    not the display name a reader expects (``Service Now``). The display name
+    only exists in the Dataverse bot table, so anything grouping by agent has to
+    join the agent dimension to get it.
+
+    The join is leftouter and falls back to the schema name, so agents that have
+    been deleted -- or every agent, when SYNC_AGENTS is off -- still appear
+    rather than collapsing to a blank label.
+    """
+    return (
+        f"{session_base()}\n"
+        "| join kind=leftouter (CopilotAgent() | project BotId, AgentDisplayName = Name)\n"
+        "    on $left.DataverseBotId == $right.BotId\n"
+        "| extend Agent = iff(isempty(AgentDisplayName), BotName, AgentDisplayName)"
+    )
+
+
 def tile(
     page: str,
     title: str,
@@ -141,11 +161,11 @@ def build_overview() -> list[dict]:
              visual_options={"hideLegend": True, "xColumnTitle": "Sessions"}),
 
         tile(page, "Busiest agents",
-             f"{session_base()}\n"
+             f"{session_by_agent()}\n"
              "| summarize Sessions = count(),\n"
              "            People = dcountif(AadObjectId, isnotempty(AadObjectId)),\n"
              "            AvgTurns = round(avg(TurnCount), 1)\n"
-             "    by BotName\n"
+             "    by Agent\n"
              "| order by Sessions desc\n"
              "| take 15",
              "table", 0, 10, 12, 7),
@@ -164,24 +184,24 @@ def build_agents() -> list[dict]:
     page = "Agents"
     return [
         tile(page, "Agent performance",
-             f"{session_base()}\n"
+             f"{session_by_agent()}\n"
              "| summarize Sessions = count(),\n"
              "            People = dcountif(AadObjectId, isnotempty(AadObjectId)),\n"
              "            EngagementPct = round(100.0 * countif(IsEngaged) / count(), 1),\n"
              "            ResolutionPct = round(100.0 * countif(IsResolved) / countif(IsEngaged), 1),\n"
              "            EscalationPct = round(100.0 * countif(IsEscalated) / countif(IsEngaged), 1),\n"
              "            AvgTurns = round(avg(TurnCount), 1)\n"
-             "    by BotName, EnvironmentName\n"
+             "    by Agent, EnvironmentName\n"
              "| order by Sessions desc",
              "table", 0, 0, 24, 8),
 
         tile(page, "Escalation rate by agent",
-             f"{session_base()}\n"
+             f"{session_by_agent()}\n"
              "| summarize Engaged = countif(IsEngaged), Escalated = countif(IsEscalated)\n"
-             "    by BotName\n"
+             "    by Agent\n"
              "| where Engaged > 0\n"
              "| extend EscalationPct = round(100.0 * Escalated / Engaged, 1)\n"
-             "| project BotName, EscalationPct\n"
+             "| project Agent, EscalationPct\n"
              "| top 15 by EscalationPct desc",
              "bar", 0, 8, 12, 7,
              visual_options={"hideLegend": True, "xColumnTitle": "Escalation rate (%)"}),

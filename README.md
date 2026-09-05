@@ -890,6 +890,13 @@ The Governance page deliberately ignores the time range for its agent
 inventory. An unused agent produces no sessions, so it cannot be found by
 filtering sessions — which is exactly why that page exists.
 
+Tiles that group by agent join the agent dimension to resolve a display name.
+Transcript metadata carries the agent's *schema* name (`cr7d6_serviceNow`), and
+only the Dataverse `bot` table knows it is called `Service Now`. The join is
+`leftouter` and falls back to the schema name, so an agent that has since been
+deleted — or every agent, if `SYNC_AGENTS` is off — still appears rather than
+collapsing to a blank label.
+
 ### Why a dashboard and not a Power BI template
 
 This started as a Power BI `.pbit`. That was abandoned, and the reasoning is
@@ -1100,6 +1107,7 @@ These talk to the real tenant and cluster, and are not part of `pytest`:
 | Dashboard imports but every tile is empty | The data source still points at the placeholder cluster | Rebuild with `--cluster`, or set the cluster under **Data sources** in the dashboard |
 | A single dashboard tile shows an error | The KQL function it calls is missing or was changed | Re-run `scripts/deploy_kql.py`, then `python dashboard/verify_queries.py --cluster <uri>` to see which tile and why |
 | Dashboard shows far more sessions than expected | **Include test pane** is on, so authoring-time conversations are counted | Switch it back to *Real traffic only* |
+| Agents appear under a schema name like `cr7d6_serviceNow` instead of their display name | Transcript metadata carries the schema name; the display name only exists in the Dataverse `bot` table | Confirm `SYNC_AGENTS` is on and the agent dimension has rows (`CopilotAgent() \| count`). Anything grouping by agent must join `CopilotAgent()` on `DataverseBotId == BotId` — the dashboard does this for you |
 
 ---
 
