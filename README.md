@@ -750,6 +750,11 @@ the view is rebuilt, for the same reason.
 
 ## Querying the archive
 
+For ready-to-run reports, start with the [KQL report pack](reports/README.md):
+daily usage, departmental adoption, agent performance, repeat usage, published
+agents with no observed usage, and data-quality coverage. Each file is a
+standalone, read-only query with an adjustable time window.
+
 ```kusto
 // Recent conversations, prompt paired with response
 CopilotConversationPair()
@@ -1031,6 +1036,8 @@ copilot-transcript-sync/
 │   ├── verify_queries.py               Runs every tile against a live cluster
 │   └── CopilotStudioAnalytics.json     Importable dashboard, no tenant data
 │
+├── reports/                           Standalone, read-only KQL reports and usage guide
+│
 ├── scripts/
 │   ├── install.ps1                     One-command install, chains all seven steps
 │   ├── uninstall.ps1                   One-command removal, including tenant objects
@@ -1279,4 +1286,3 @@ updates, and confirm separately if you publish elsewhere.
 [add-app-user]: https://learn.microsoft.com/en-us/power-platform/admin/create-dataverseapplicationuser
 [api-limits]: https://learn.microsoft.com/en-us/power-apps/developer/data-platform/api-limits
 [env-groups]: https://learn.microsoft.com/en-us/power-platform/admin/environment-groups
-

@@ -1,0 +1,20 @@
+// Daily observed usage across the tenant. Run the entire file.
+let ReportStart = ago(30d);
+let ReportEnd = now();
+let IncludeTestPane = false;
+CopilotSession()
+| where SessionStart >= ReportStart and SessionStart < ReportEnd
+| where IncludeTestPane or not(coalesce(IsDesignMode, false))
+| summarize
+    Sessions = count(),
+    EngagedSessions = countif(IsEngaged),
+    ResolvedSessions = countif(IsEngaged and IsResolved),
+    EscalatedSessions = countif(IsEngaged and IsEscalated),
+    AbandonedSessions = countif(IsEngaged and IsAbandoned),
+    KnownUsers = dcountif(AadObjectId, isnotempty(AadObjectId)),
+    AgentsUsed = dcountif(
+        tostring(pack_array(EnvironmentId, iff(isnotempty(DataverseBotId), "dataverse", "runtime"), coalesce(DataverseBotId, BotId))),
+        isnotempty(DataverseBotId) or isnotempty(BotId))
+    by Day = startofday(SessionStart)
+| order by Day asc
+| render timechart with (xcolumn=Day, ycolumns=Sessions, EngagedSessions)

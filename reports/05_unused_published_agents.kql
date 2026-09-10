@@ -1,0 +1,26 @@
+// Publication recorded, but no observed sessions in the selected window.
+// Missing telemetry or stale inventory can also explain zero usage.
+let ReportStart = ago(30d);
+let ReportEnd = now();
+let IncludeTestPane = false;
+let MinimumPublishedAge = 7d;
+let Usage =
+    CopilotSession()
+    | where SessionStart >= ReportStart and SessionStart < ReportEnd
+    | where IncludeTestPane or not(coalesce(IsDesignMode, false))
+    | where isnotempty(DataverseBotId)
+    | summarize Sessions = count() by EnvironmentId, DataverseBotId;
+CopilotAgentRaw
+| where isnotempty(BotId)
+| summarize arg_max(IngestedAt, *) by EnvironmentId, DataverseBotId = BotId
+| where isnotnull(PublishedOn) and PublishedOn <= ReportEnd - MinimumPublishedAge
+| join kind=leftouter Usage on EnvironmentId, DataverseBotId
+| extend Sessions = coalesce(Sessions, 0)
+| where Sessions == 0
+| project EnvironmentId, EnvironmentName, DataverseBotId, Agent = coalesce(Name, SchemaName, DataverseBotId),
+    StateLabel, PublishedOn,
+    DaysSincePublicationAtWindowEnd = datetime_diff("day", ReportEnd, PublishedOn),
+    Sessions, OwnerId,
+    MetadataLastSeen = IngestedAt,
+    MetadataAgeDays = datetime_diff("day", now(), IngestedAt)
+| order by DaysSincePublicationAtWindowEnd desc, Agent asc
