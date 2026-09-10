@@ -1,0 +1,77 @@
+// Coverage before interpreting the other reports. Includes environments with
+// inventory but no transcripts, and separates all traffic from report traffic.
+let ReportStart = ago(30d);
+let ReportEnd = now();
+let IncludeTestPane = false;
+let Agents = materialize(
+    CopilotAgentRaw
+    | where isnotempty(BotId)
+    | summarize arg_max(IngestedAt, EnvironmentName) by EnvironmentId, DataverseBotId = BotId);
+let Users =
+    CopilotUser()
+    | where isnotempty(AadObjectId)
+    | project AadObjectId, UserResolved = Resolved;
+let SessionHealth = materialize(
+    CopilotSession()
+    | where SessionStart >= ReportStart and SessionStart < ReportEnd
+    | join kind=leftouter Users on AadObjectId
+    | join kind=leftouter (
+        Agents | project EnvironmentId, DataverseBotId, AgentMatched = true
+      ) on EnvironmentId, DataverseBotId
+    | extend InReport = IncludeTestPane or not(coalesce(IsDesignMode, false))
+    | summarize
+        EnvironmentName = take_any(EnvironmentName),
+        AllSessions = count(),
+        TestPaneSessions = countif(IsDesignMode == true),
+        UnknownDesignModeSessions = countif(isnull(IsDesignMode)),
+        ReportSessions = countif(InReport),
+        NoEntraIdSessions = countif(InReport and isempty(AadObjectId)),
+        UnresolvedUserSessions = countif(InReport and isnotempty(AadObjectId) and not(coalesce(UserResolved, false))),
+        ResolvedUserSessions = countif(InReport and UserResolved == true),
+        AgentMatchedSessions = countif(InReport and AgentMatched == true),
+        MissingAgentIdSessions = countif(InReport and isempty(DataverseBotId)),
+        UnmatchedAgentSessions = countif(InReport and isnotempty(DataverseBotId) and not(coalesce(AgentMatched, false)))
+        by EnvironmentId);
+// Creation time measures archive arrival, not session time. Parse failures and
+// transcripts with no SessionInfo activity do not appear in CopilotSession().
+let TranscriptHealth = materialize(
+    CopilotTranscript
+    | where CreatedOn >= ReportStart and CreatedOn < ReportEnd
+    | summarize
+        EnvironmentName = take_any(EnvironmentName),
+        TranscriptRows = count(),
+        ParseFailures = countif(isnotempty(ContentParseError)),
+        LatestTranscriptCreatedOn = max(CreatedOn),
+        LatestTranscriptIngestedAt = max(IngestedAt)
+        by EnvironmentId);
+let AgentHealth = materialize(
+    Agents
+    | summarize EnvironmentName = take_any(EnvironmentName),
+        InventoryAgents = count(), MetadataLastSeen = max(IngestedAt) by EnvironmentId);
+union
+    (SessionHealth | project EnvironmentId, EnvironmentName),
+    (TranscriptHealth | project EnvironmentId, EnvironmentName),
+    (AgentHealth | project EnvironmentId, EnvironmentName)
+| summarize EnvironmentName = take_any(EnvironmentName) by EnvironmentId
+| join kind=leftouter SessionHealth on EnvironmentId
+| join kind=leftouter TranscriptHealth on EnvironmentId
+| join kind=leftouter AgentHealth on EnvironmentId
+| project EnvironmentId, EnvironmentName,
+    InventoryAgents = coalesce(InventoryAgents, 0), MetadataLastSeen,
+    TranscriptRows = coalesce(TranscriptRows, 0), ParseFailures = coalesce(ParseFailures, 0),
+    LatestTranscriptCreatedOn, LatestTranscriptIngestedAt,
+    AllSessions = coalesce(AllSessions, 0),
+    TestPaneSessions = coalesce(TestPaneSessions, 0),
+    UnknownDesignModeSessions = coalesce(UnknownDesignModeSessions, 0),
+    ReportSessions = coalesce(ReportSessions, 0),
+    NoEntraIdSessions = coalesce(NoEntraIdSessions, 0),
+    UnresolvedUserSessions = coalesce(UnresolvedUserSessions, 0),
+    ResolvedUserSessions = coalesce(ResolvedUserSessions, 0),
+    AgentMatchedSessions = coalesce(AgentMatchedSessions, 0),
+    MissingAgentIdSessions = coalesce(MissingAgentIdSessions, 0),
+    UnmatchedAgentSessions = coalesce(UnmatchedAgentSessions, 0)
+| extend
+    ResolvedUserPct = iff(ReportSessions > 0, round(100.0 * ResolvedUserSessions / ReportSessions, 1), real(null)),
+    AgentMatchedPct = iff(ReportSessions > 0, round(100.0 * AgentMatchedSessions / ReportSessions, 1), real(null)),
+    ParseFailurePct = iff(TranscriptRows > 0, round(100.0 * ParseFailures / TranscriptRows, 1), real(null))
+| order by ReportSessions desc, EnvironmentName asc

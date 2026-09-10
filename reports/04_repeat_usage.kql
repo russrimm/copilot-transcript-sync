@@ -1,0 +1,36 @@
+// Repeat usage means an identified user was active on at least two UTC days
+// in this window. It is not lifetime retention or a new-user cohort analysis.
+let ReportStart = ago(30d);
+let ReportEnd = now();
+let IncludeTestPane = false;
+let Users =
+    CopilotUser()
+    | where isnotempty(AadObjectId)
+    | project AadObjectId, UserResolved = Resolved, UserDepartment = Department;
+CopilotSession()
+| where SessionStart >= ReportStart and SessionStart < ReportEnd
+| where IncludeTestPane or not(coalesce(IsDesignMode, false))
+| where isnotempty(AadObjectId)
+| summarize
+    UserSessions = count(),
+    ActiveDays = dcount(startofday(SessionStart)),
+    AgentsUsed = dcountif(
+        tostring(pack_array(EnvironmentId, iff(isnotempty(DataverseBotId), "dataverse", "runtime"), coalesce(DataverseBotId, BotId))),
+        isnotempty(DataverseBotId) or isnotempty(BotId))
+    by AadObjectId
+| join kind=leftouter Users on AadObjectId
+| extend Attribution = iff(UserResolved == true, "Resolved", "Unresolved")
+| extend Department = iff(
+    Attribution == "Resolved", coalesce(UserDepartment, "(department missing)"), "(not attributable)")
+| summarize
+    KnownUsers = count(),
+    ReturningUsers = countif(ActiveDays >= 2),
+    OneDayUsers = countif(ActiveDays == 1),
+    MultiAgentUsers = countif(AgentsUsed >= 2),
+    Sessions = sum(UserSessions),
+    MedianActiveDays = percentile(ActiveDays, 50)
+    by Department, Attribution
+| extend
+    RepeatUsagePct = round(100.0 * ReturningUsers / KnownUsers, 1),
+    SessionsPerKnownUser = round(1.0 * Sessions / KnownUsers, 2)
+| order by KnownUsers desc, Department asc

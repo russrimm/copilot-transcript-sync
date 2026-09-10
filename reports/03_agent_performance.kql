@@ -1,0 +1,48 @@
+// Agent workload and outcomes, retaining sessions with no inventory match.
+let ReportStart = ago(30d);
+let ReportEnd = now();
+let IncludeTestPane = false;
+let MinimumEngagedSample = 20;
+// Scope snapshots to the environment as well as the Dataverse bot key.
+let Agents =
+    CopilotAgentRaw
+    | where isnotempty(BotId)
+    | summarize arg_max(IngestedAt, Name) by EnvironmentId, DataverseBotId = BotId
+    | project EnvironmentId, DataverseBotId, AgentDisplayName = Name, InventoryMatched = true;
+CopilotSession()
+| where SessionStart >= ReportStart and SessionStart < ReportEnd
+| where IncludeTestPane or not(coalesce(IsDesignMode, false))
+| extend AgentKey = case(
+    isnotempty(DataverseBotId), strcat("dataverse:", DataverseBotId),
+    isnotempty(BotId), strcat("runtime:", BotId),
+    "(agent ID missing)")
+| summarize
+    EnvironmentName = take_any(EnvironmentName),
+    DataverseBotId = take_any(DataverseBotId),
+    AgentSchemaName = take_any(BotName),
+    Sessions = count(),
+    KnownUsers = dcountif(AadObjectId, isnotempty(AadObjectId)),
+    EngagedSessions = countif(IsEngaged),
+    ResolvedSessions = countif(IsEngaged and IsResolved),
+    EscalatedSessions = countif(IsEngaged and IsEscalated),
+    AbandonedSessions = countif(IsEngaged and IsAbandoned),
+    AvgTurns = round(avgif(todouble(TurnCount), TurnCount >= 0), 1),
+    DurationSamples = countif(SessionDuration >= 0s),
+    MedianDurationSeconds = percentile(iff(SessionDuration >= 0s, SessionDuration / 1s, real(null)), 50),
+    LastUsed = max(SessionStart)
+    by EnvironmentId, AgentKey
+| join kind=leftouter Agents on EnvironmentId, DataverseBotId
+| extend
+    Agent = coalesce(AgentDisplayName, AgentSchemaName, AgentKey),
+    InventoryMatched = coalesce(InventoryMatched, false),
+    AvgTurns = iff(isfinite(AvgTurns), AvgTurns, real(null)),
+    EngagementPct = round(100.0 * EngagedSessions / Sessions, 1),
+    ResolutionPct = iff(EngagedSessions > 0, round(100.0 * ResolvedSessions / EngagedSessions, 1), real(null)),
+    EscalationPct = iff(EngagedSessions > 0, round(100.0 * EscalatedSessions / EngagedSessions, 1), real(null)),
+    AbandonmentPct = iff(EngagedSessions > 0, round(100.0 * AbandonedSessions / EngagedSessions, 1), real(null)),
+    SmallOutcomeSample = EngagedSessions < MinimumEngagedSample
+| project EnvironmentId, EnvironmentName, AgentKey, Agent, InventoryMatched,
+    Sessions, KnownUsers, EngagedSessions, ResolvedSessions, EscalatedSessions,
+    AbandonedSessions, EngagementPct, ResolutionPct, EscalationPct, AbandonmentPct,
+    SmallOutcomeSample, AvgTurns, DurationSamples, MedianDurationSeconds, LastUsed
+| order by Sessions desc, Agent asc

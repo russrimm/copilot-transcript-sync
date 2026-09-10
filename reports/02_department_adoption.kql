@@ -1,0 +1,34 @@
+// Observed departmental usage, not adoption as a percentage of headcount.
+let ReportStart = ago(30d);
+let ReportEnd = now();
+let IncludeTestPane = false;
+let Users =
+    CopilotUser()
+    | where isnotempty(AadObjectId)
+    | project AadObjectId, UserResolved = Resolved, UserDepartment = Department;
+CopilotSession()
+| where SessionStart >= ReportStart and SessionStart < ReportEnd
+| where IncludeTestPane or not(coalesce(IsDesignMode, false))
+| join kind=leftouter Users on AadObjectId
+| extend Attribution = case(
+    isempty(AadObjectId), "No Entra ID",
+    UserResolved == true, "Resolved",
+    "Unresolved")
+| extend Department = iff(
+    Attribution == "Resolved", coalesce(UserDepartment, "(department missing)"), "(not attributable)")
+| summarize
+    Sessions = count(),
+    KnownUsers = dcountif(AadObjectId, isnotempty(AadObjectId)),
+    AgentsUsed = dcountif(
+        tostring(pack_array(EnvironmentId, iff(isnotempty(DataverseBotId), "dataverse", "runtime"), coalesce(DataverseBotId, BotId))),
+        isnotempty(DataverseBotId) or isnotempty(BotId)),
+    EngagedSessions = countif(IsEngaged),
+    ResolvedSessions = countif(IsEngaged and IsResolved),
+    EscalatedSessions = countif(IsEngaged and IsEscalated),
+    AbandonedSessions = countif(IsEngaged and IsAbandoned)
+    by Department, Attribution
+| extend
+    SessionsPerKnownUser = iff(KnownUsers > 0, round(1.0 * Sessions / KnownUsers, 2), real(null)),
+    EngagementPct = round(100.0 * EngagedSessions / Sessions, 1),
+    ResolutionPct = iff(EngagedSessions > 0, round(100.0 * ResolvedSessions / EngagedSessions, 1), real(null))
+| order by Sessions desc, Department asc
