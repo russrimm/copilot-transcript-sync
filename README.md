@@ -264,11 +264,6 @@ explicitly choose append-only mode.
 
 The pipeline queries every environment that has a Dataverse database, regardless of type.
 
-The costs are asymmetric. Querying an environment that holds no transcripts costs a single
-request returning zero rows. Skipping one that does hold transcripts loses that data
-permanently, once Dataverse's 30-day retention passes. Measured in the tenant this was built
-against, Developer environments held more transcripts than Production environments did.
-
 Use `EXCLUDED_ENVIRONMENT_TYPES` to opt out of a type only after confirming it holds nothing
 in your own tenant:
 
